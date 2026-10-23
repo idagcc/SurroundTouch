@@ -1,0 +1,42 @@
+SurroundTouch validation: 23 October 2026
+
+PASS: Both application variants compile with the .NET Framework x64 compiler.
+PASS: 606 core assertions, rerun after the identification fix.
+PASS: Native structure layouts and controller enumeration checked.
+PASS: Installer parses under Windows PowerShell 5.1.
+PASS: Filesystem-state installer and subsequent update completed successfully.
+PASS: Installed executable signatures Valid; UI Access token True.
+PASS: App/recovery folders have protected administrator-owned permissions.
+PASS: Exact public certificate trusted; temporary private signing key removed.
+PASS: Start menu shortcut targets the installed Program Files executable.
+PASS: UPDD removed through its registered vendor uninstaller; no reboot requested.
+      UPDD app service, filter registration and virtual touch devices are gone.
+      Three residual vendor driver-service registrations are stopped.
+PASS: Updated app remains running and responding.
+
+USER-VERIFIED PHYSICAL RESULTS:
+PASS: LEFT and RIGHT identification select distinct physical CoolTouch controllers.
+PASS: Both touch markers follow the user's fingers accurately; Active shows 2.
+PASS: Accurate touch near panel edges, corners, and center seam.
+PASS: Held contacts release cleanly; Active returns to 0 without stuck contacts.
+PASS: Accurate touch in ordinary Windows applications on both screens.
+PASS: Saved profile contains distinct controller assignments for 2160x1920,
+      side by side, equal halves; backed up as tested-profile.json.
+
+The identification fix avoids creating a synthetic input device during Identify,
+initializes injection once per application, excludes virtual devices from physical
+selection/validation, and checks relevant controllers on device broadcasts.
+The installer no longer requires an application registry key; protected recovery
+metadata is at %ProgramFiles%\SurroundTouch.InstallState\state.json.
+
+Validation limits:
+- Physical results above were performed and explicitly confirmed by the user.
+- Stop/restart correction, reboot recovery and every target app were not retested.
+- WindowsIntegration compiled but its interactive test was not successfully run.
+  An early restricted-environment attempt returned error 6; computer-use tooling
+  subsequently rejected its launch and inspection of SurroundTouch's UI.
+  These restrictions do not replace the successful final hands-on results.
+- Raw-hardware-only apps and secure desktop/logon are outside the verified scope.
+
+Reproduce pure tests, with no desktop injection:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1

@@ -1,0 +1,28 @@
+# Rebuild locally with build.ps1.
+*.exe
+*.dll
+*.pdb
+*.zip
+/package-hashes.json
+bin/
+obj/
+.vs/
+
+# Local hardware configuration and runtime diagnostics.
+/tested-profile.json
+profile.json
+status.log
+*.log
+state.json
+state.pending.json
+diagnostics*.txt
+SurroundTouch-diagnostics*.txt
+
+# Signing material belongs only to each protected local installation.
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt
+*.snk
