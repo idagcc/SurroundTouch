@@ -13,7 +13,7 @@ $sourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $packageDirectory 'src') 
 if ($sourceFiles.Count -eq 0) { throw 'No C# source files were found in src.' }
 $commonArguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/warn:4', '/codepage:65001', '/langversion:5',
     '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Windows.Forms.dll',
-    '/reference:System.Drawing.dll', '/reference:System.Runtime.Serialization.dll')
+    '/reference:System.Drawing.dll', '/reference:System.Runtime.Serialization.dll', '/reference:System.Management.dll')
 foreach ($variant in @(
     @{ Name = 'SurroundTouch.exe'; Manifest = 'app.manifest' },
     @{ Name = 'SurroundTouch.Diagnostics.exe'; Manifest = 'diagnostics.manifest' }

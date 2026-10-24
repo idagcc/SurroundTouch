@@ -49,6 +49,9 @@ namespace SurroundTouch
         [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint desired,out IntPtr token);
         [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int infoClass,out uint value,uint size,out uint returned);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+        [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);
+        [DllImport("user32.dll",CharSet=CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
+        [DllImport("user32.dll")] internal static extern bool PostMessage(IntPtr hwnd,uint message,IntPtr w,IntPtr l);
         internal static bool HasUIAccess()
         {
             IntPtr token; if(!OpenProcessToken(GetCurrentProcess(),8,out token))return false;
@@ -85,7 +88,9 @@ namespace SurroundTouch
         internal static void Inject(InjectedContact[] contacts)
         {
             if(contacts.Length==0)return;
-            TOUCH[] frame=new TOUCH[contacts.Length];
+            if(injectionBuffers==null)injectionBuffers=new TOUCH[TouchPipeline.MaximumContacts+1][];
+            TOUCH[] frame=injectionBuffers[contacts.Length];
+            if(frame==null)injectionBuffers[contacts.Length]=frame=new TOUCH[contacts.Length];
             for(int i=0;i<frame.Length;i++)
             {
                 InjectedContact c=contacts[i];
@@ -96,12 +101,14 @@ namespace SurroundTouch
             }
             for(int retry=0;retry<12;retry++)
             {
-                if(InjectTouchInput((uint)frame.Length,frame))return;
+                if(InjectTouchInput((uint)frame.Length,frame)) { Interlocked.Increment(ref RuntimeStats.InjectedFrames);return; }
                 int error=Marshal.GetLastWin32Error(); if(error!=21)throw new Win32Exception(error,"Windows rejected a corrected touch frame (error "+error+": "+new Win32Exception(error).Message+")");
+                Interlocked.Increment(ref RuntimeStats.InjectionRetries);
                 Thread.Sleep(1);
             }
             throw new Win32Exception(21,"Windows touch injection remained busy");
         }
+        [ThreadStatic] static TOUCH[][] injectionBuffers;
     }
     internal sealed class TouchDevice
     {
@@ -109,6 +116,8 @@ namespace SurroundTouch
         public bool IsUpdd { get { return !String.IsNullOrEmpty(Path)&&Path.IndexOf("UPDDVHID",StringComparison.OrdinalIgnoreCase)>=0; } }
         public bool IsInjectionDevice { get { return !String.IsNullOrEmpty(Path)&&Path.IndexOf("VIRTUAL_DIGITIZER",StringComparison.OrdinalIgnoreCase)>=0; } }
         public bool IsPhysical { get { return !IsUpdd&&!IsInjectionDevice; } }
+        public bool SupportsTwoTouches { get { return Contacts>=2; } }
+        public RoleProfile Identity { get { return new RoleProfile { Path=Path,SourceX=Source.X,SourceY=Source.Y,SourceWidth=HasRect?Source.Width:0,SourceHeight=HasRect?Source.Height:0 }; } }
         public override string ToString() { return Number+". "+Name+" ("+Contacts+" contacts)"; }
     }
 }

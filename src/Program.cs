@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SurroundTouch
@@ -12,6 +13,7 @@ namespace SurroundTouch
     internal static class Program
     {
         static readonly object logLock=new object();
+        internal static uint ShowMessage;
         internal static void LogStatus(string text)
         {
             // Record app status only, never touch coordinates or other apps' data.
@@ -30,6 +32,8 @@ namespace SurroundTouch
         [STAThread] static int Main(string[] args)
         {
             Native.DpiAware();
+            ShowMessage=Native.RegisterWindowMessage("SurroundTouch.Show.28F2E5B7");
+            bool startup=Array.Exists(args,delegate(string arg) { return arg=="--startup"; });
             if(args.Length==2 && args[0]=="--diagnostics")
             {
                 try { File.WriteAllText(args[1],Diagnostics(),Encoding.UTF8); return 0; }
@@ -38,7 +42,7 @@ namespace SurroundTouch
             bool created;
             using(Mutex mutex=new Mutex(true,"Local\\SurroundTouch.Application",out created))
             {
-                if(!created) { MessageBox.Show("SurroundTouch is already open. Use its existing window.","SurroundTouch"); return 0; }
+                if(!created) { if(!startup&&ShowMessage!=0)Native.PostMessage(new IntPtr(0xffff),ShowMessage,IntPtr.Zero,IntPtr.Zero);return 0; }
                 Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
                 MainForm main=null;
@@ -47,14 +51,14 @@ namespace SurroundTouch
                     if(main!=null)main.EmergencyStop();
                     MessageBox.Show(e.Exception.Message+"\nTouch correction has stopped.","SurroundTouch",MessageBoxButtons.OK,MessageBoxIcon.Error);
                 };
-                main=new MainForm(); Application.Run(main);
+                main=new MainForm(startup); Application.Run(main);
             }
             return 0;
         }
         internal static string Diagnostics()
         {
             StringBuilder b=new StringBuilder();
-            b.AppendLine("SurroundTouch diagnostics 1.0"); b.AppendLine("UTC: "+DateTime.UtcNow.ToString("O"));
+            b.AppendLine("SurroundTouch diagnostics 1.1"); b.AppendLine("UTC: "+DateTime.UtcNow.ToString("O"));
             b.AppendLine("OS: "+Environment.OSVersion+" | process: "+(IntPtr.Size*8)+" bit");
             b.AppendLine("UI Access token: "+Native.HasUIAccess());
             b.AppendLine("Native sizes: POINTER_INFO="+Marshal.SizeOf(typeof(Native.POINTER_INFO))+" TOUCH="+Marshal.SizeOf(typeof(Native.TOUCH))+" DEVICE="+Marshal.SizeOf(typeof(Native.DEVICE)));
@@ -65,6 +69,12 @@ namespace SurroundTouch
                 b.AppendLine(d.ToString()); b.AppendLine("  Path: "+d.Path);
                 b.AppendLine("  Source pixels: "+d.Source.X+","+d.Source.Y+" "+d.Source.Width+"x"+d.Source.Height+" available="+d.HasRect);
             }
+            b.AppendLine(RuntimeStats.Report());
+            try { b.AppendLine("Start at sign-in registered for this executable: "+StartupRegistration.Enabled); }
+            catch(Exception ex) { b.AppendLine("Startup registration unavailable: "+ex.Message); }
+            try { b.AppendLine("Resume saved correction: "+AppSettings.Load().ResumeCorrection); }
+            catch(Exception ex) { b.AppendLine("Startup settings unavailable: "+ex.Message); }
+            b.AppendLine(DriverDiagnostics.Report());
             b.AppendLine("Profile directory: "+Profile.DirectoryPath);
             string log=Path.Combine(Profile.DirectoryPath,"status.log");
             try
@@ -91,21 +101,28 @@ namespace SurroundTouch
         readonly RoleCard first,second;
         readonly TouchEngine engine;
         readonly List<Control> setup=new List<Control>();
+        readonly CheckBox launchAtSignIn=new CheckBox(),resume=new CheckBox();
+        readonly NotifyIcon tray=new NotifyIcon();
+        readonly System.Windows.Forms.Timer restoreTimer=new System.Windows.Forms.Timer { Interval=3000 };
+        AppSettings appSettings=new AppSettings();
+        bool preferencesReady,exiting,restoring,reportBusy;
+        DateTime restoreDeadline;
         List<TouchDevice> devices=new List<TouchDevice>();
         Screen[] screens=new Screen[0];
         Profile profile;
         bool busy;
         TestForm testForm;
 
-        public MainForm()
+        public MainForm(bool startupLaunch)
         {
             Text="SurroundTouch"; Font=new Font("Segoe UI",10F); ForeColor=Ink; BackColor=Color.FromArgb(245,248,252);
-            ClientSize=new Size(980,860); MinimumSize=new Size(980,899); StartPosition=FormStartPosition.CenterScreen; AutoScaleMode=AutoScaleMode.Dpi;
-            var root=new TableLayoutPanel { Dock=DockStyle.Fill,Padding=new Padding(24),ColumnCount=1,RowCount=8 };
+            ClientSize=new Size(980,950); MinimumSize=new Size(980,600); StartPosition=FormStartPosition.CenterScreen; AutoScaleMode=AutoScaleMode.Dpi;
+            var scroll=new Panel { Dock=DockStyle.Fill,AutoScroll=true };Controls.Add(scroll);
+            var root=new TableLayoutPanel { Dock=DockStyle.Top,Height=950,Padding=new Padding(24),ColumnCount=1,RowCount=9 };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute,78)); root.RowStyles.Add(new RowStyle(SizeType.Absolute,94));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute,110)); root.RowStyles.Add(new RowStyle(SizeType.Absolute,204));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute,52)); root.RowStyles.Add(new RowStyle(SizeType.Absolute,64));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent,100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute,32)); Controls.Add(root);
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute,52)); root.RowStyles.Add(new RowStyle(SizeType.Absolute,84));root.RowStyles.Add(new RowStyle(SizeType.Absolute,64));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent,100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute,32)); scroll.Controls.Add(root);
             var heading=new Panel { Dock=DockStyle.Fill };
             heading.Controls.Add(new Label { Text="SurroundTouch",Font=new Font("Segoe UI",23F,FontStyle.Bold),AutoSize=true,Location=new Point(0,0) });
             heading.Controls.Add(new Label { Text="Two touchscreens. One accurate desktop.",AutoSize=true,ForeColor=Muted,Location=new Point(3,47) }); root.Controls.Add(heading);
@@ -126,33 +143,78 @@ namespace SurroundTouch
             MakeButton(start,"Start correction",156,Blue,Color.White);MakeButton(stop,"Stop",82,Color.White,Ink);MakeButton(test,"Test touch",110,Color.White,Ink);MakeButton(refresh,"Refresh devices",142,Color.White,Ink);
             Button swap=new Button(),save=new Button();MakeButton(swap,"Swap screens",128,Color.White,Ink);MakeButton(save,"Save profile",116,Color.White,Ink);
             actions.Controls.AddRange(new Control[]{start,stop,test,refresh,swap,save});root.Controls.Add(actions);
+            var preferences=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=true };
+            var load=new Button();var saveAs=new Button();var drivers=new Button();
+            MakeButton(load,"Load profile…",136,Color.White,Ink);MakeButton(saveAs,"Save profile as…",158,Color.White,Ink);MakeButton(drivers,"Touch driver check",172,Color.White,Ink);
+            launchAtSignIn.Text="Start at Windows sign-in";launchAtSignIn.Size=new Size(230,32);
+            resume.Text="Resume saved correction on launch";resume.Size=new Size(310,32);
+            preferences.Controls.AddRange(new Control[]{load,saveAs,drivers});preferences.SetFlowBreak(drivers,true);
+            preferences.Controls.AddRange(new Control[]{launchAtSignIn,resume});root.Controls.Add(preferences);
             status.Dock=DockStyle.Fill;status.Font=new Font("Segoe UI",11F,FontStyle.Bold);status.Padding=new Padding(10);status.BackColor=Color.White;root.Controls.Add(status);
             details.Dock=DockStyle.Fill;details.ForeColor=Muted;details.Padding=new Padding(4,8,4,0);root.Controls.Add(details);
             var bottom=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2 };bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,65));bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,35));
             activity.Text="Emergency stop: Ctrl + Alt + F10";activity.Dock=DockStyle.Fill;activity.ForeColor=Muted;bottom.Controls.Add(activity);
             var diagnostic=new LinkLabel { Text="Save diagnostic report",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight };bottom.Controls.Add(diagnostic);root.Controls.Add(bottom);
-            setup.AddRange(new Control[]{display,layout,split,gap,first,second,refresh,swap,save});
+            setup.AddRange(new Control[]{display,layout,split,gap,first,second,refresh,swap,save,load,saveAs,drivers});
             engine=new TouchEngine(this);
-            engine.Stopped=delegate(string reason) { busy=false; SetRunning(false); Status(reason,false); };
+            engine.Stopped=delegate(string reason) { busy=false; SetRunning(false); Status(reason,false);if(startupLaunch&&!Visible)tray.ShowBalloonTip(6000,"SurroundTouch",reason,ToolTipIcon.Info); };
+            engine.Started=delegate { if(busy)Status("Correction active. Close or minimize this window to keep running in the tray.",false); };
             engine.Activity=delegate(int contacts,long frames) { if(busy) { status.Text="Correction active  ·  "+contacts+" contacts  ·  "+frames+" frames";status.ForeColor=Color.FromArgb(0,118,86); } };
             start.Click+=delegate { StartCorrection(); }; stop.Click+=delegate { EmergencyStop(); };
             refresh.Click+=delegate { RefreshDevices(); };save.Click+=delegate { TrySave(); };swap.Click+=delegate { var a=first.ReadRole();first.LoadRole(second.ReadRole());second.LoadRole(a); };
             test.Click+=delegate { OpenTest(); };
             diagnostic.LinkClicked+=delegate { SaveDiagnostics(); };
+            load.Click+=delegate { LoadProfile(); };saveAs.Click+=delegate { ExportProfile(); };drivers.Click+=delegate { OpenDriverCheck(); };
+            launchAtSignIn.CheckedChanged+=delegate
+            {
+                if(!preferencesReady)return;
+                try { StartupRegistration.SetEnabled(launchAtSignIn.Checked);Status(launchAtSignIn.Checked?"SurroundTouch will start in the tray when you sign in to Windows.":"Startup at sign-in is disabled.",false); }
+                catch(Exception ex) { preferencesReady=false;launchAtSignIn.Checked=!launchAtSignIn.Checked;preferencesReady=true;Status(ex.Message,true); }
+            };
+            resume.CheckedChanged+=delegate
+            {
+                if(!preferencesReady)return;
+                try { appSettings.ResumeCorrection=resume.Checked;appSettings.Save();if(!resume.Checked)CancelRestore();Status(resume.Checked?"The last saved profile will resume on launch after controller and layout checks.":"Automatic correction restore is disabled.",false); }
+                catch(Exception ex) { preferencesReady=false;resume.Checked=!resume.Checked;appSettings.ResumeCorrection=resume.Checked;preferencesReady=true;Status(ex.Message,true); }
+            };
+            tray.Icon=SystemIcons.Application;tray.Text="SurroundTouch";tray.Visible=true;
+            var menu=new ContextMenuStrip();menu.Items.Add("Open SurroundTouch",null,delegate { ShowWindow(); });
+            menu.Items.Add("Stop correction",null,delegate { EmergencyStop(); });
+            menu.Items.Add("Exit",null,delegate { exiting=true;Close(); });tray.ContextMenuStrip=menu;
+            tray.DoubleClick+=delegate { ShowWindow(); };
+            Resize+=delegate { if(WindowState==FormWindowState.Minimized)Hide(); };
+            restoreTimer.Tick+=delegate { TryRestore(); };
             layout.SelectedIndexChanged+=delegate { LayoutChanged(); };display.SelectedIndexChanged+=delegate { LayoutChanged(); };split.ValueChanged+=delegate { preview.Invalidate(); };gap.ValueChanged+=delegate { preview.Invalidate(); };
             Shown+=delegate
             {
-                try { profile=Profile.Load(); }catch(Exception ex) { profile=new Profile();Status("Saved profile could not be loaded: "+ex.Message,true); }
+                string loadError=null;
+                try { profile=Profile.Load(); }catch(Exception ex) { profile=new Profile();loadError="Saved profile could not be loaded: "+ex.Message; }
                 RefreshDevices();
+                try { appSettings=AppSettings.Load();launchAtSignIn.Checked=StartupRegistration.Enabled;resume.Checked=appSettings.ResumeCorrection; }
+                catch(Exception ex) { loadError="Startup settings could not be loaded: "+ex.Message; }
+                preferencesReady=true;
+                if(startupLaunch)Hide();
+                if(loadError!=null) { Status(loadError,true);ShowWindow(); }
+                else if(appSettings.ResumeCorrection)
+                {
+                    if(Native.HasUIAccess()) { restoring=true;restoreDeadline=DateTime.UtcNow.AddSeconds(60);SetRunning(true);restoreTimer.Start();TryRestore(); }
+                    else Status("Automatic restore needs the installed UI Access application.",true);
+                }
             };
-            FormClosing+=delegate { engine.Dispose(); if(testForm!=null)testForm.Close(); };
+            FormClosing+=delegate(object sender,FormClosingEventArgs e)
+            {
+                if(e.CloseReason==CloseReason.UserClosing&&!exiting) { e.Cancel=true;Hide();tray.ShowBalloonTip(4000,"SurroundTouch","Running in the tray. Use Stop or Exit from the tray menu.",ToolTipIcon.Info);return; }
+                restoreTimer.Dispose();engine.Dispose();if(testForm!=null)testForm.Close();tray.Visible=false;tray.Dispose();menu.Dispose();
+            };
             stop.Enabled=false;
         }
         static void MakeButton(Button b,string text,int width,Color back,Color fore) { b.Text=text;b.Size=new Size(width,38);b.FlatStyle=FlatStyle.Flat;b.FlatAppearance.BorderColor=Color.FromArgb(214,222,233);b.BackColor=back;b.ForeColor=fore;b.Cursor=Cursors.Hand; }
         void Status(string text,bool error) { status.Text=text;status.ForeColor=error?Color.FromArgb(180,45,45):Ink; Program.LogStatus(text); }
         void SetRunning(bool value) { foreach(Control c in setup)c.Enabled=!value;start.Enabled=!value;stop.Enabled=value; }
-        public void EmergencyStop() { engine.Stop("Stopped. Windows is receiving the original touch input.");busy=false;SetRunning(false); }
-        void RefreshDevices()
+        void ShowWindow() { Show();WindowState=FormWindowState.Normal;Activate(); }
+        void CancelRestore() { bool wasRestoring=restoring;restoring=false;restoreTimer.Stop();if(wasRestoring&&!busy)SetRunning(false); }
+        public void EmergencyStop() { CancelRestore();engine.Stop("Stopped. Windows is receiving the original touch input."); }
+        bool RefreshDevices()
         {
             try
             {
@@ -164,11 +226,13 @@ namespace SurroundTouch
                 first.SetDevices(devices);second.SetDevices(devices);first.LoadRole(profile.First);second.LoadRole(profile.Second);LayoutChanged();
                 bool access=Native.HasUIAccess();int physical=devices.FindAll(d=>d.IsPhysical).Count;
                 Status(physical<2?"Detected "+physical+" physical touchscreen controllers. Two independent controllers are required.":access?"Ready. Identify the left and right screen, then start correction.":"Setup required. Run Install.cmd, then open SurroundTouch from the installed shortcut.",physical<2);
-                details.Text=physical+" physical touch controllers detected. "+(access?"Windows UI Access is enabled.":"This portable preview can inspect devices and test local touch; global correction needs installation.")+"\nUse Identify and tap the requested physical screen. Keep all fingers lifted when starting. Closing this app restores normal Windows touch.";
+                details.Text=physical+" physical touch controllers detected. "+(access?"Windows UI Access is enabled.":"This portable preview can inspect devices and test local touch; global correction needs installation.")+"\nUse Identify to assign the physical sides. Keep fingers lifted when starting. Close minimizes to the tray; Stop or tray > Exit restores original touch.";
+                if(physical==2)details.Text+="\nTwo controllers detected automatically. "+devices.FindAll(d=>d.IsPhysical&&d.SupportsTwoTouches).Count+" advertise two or more contacts each. Use Touch driver check to verify real input.";
                 if(devices.Exists(d=>d.IsUpdd))details.Text+="\nUPDD virtual devices detected and excluded. Stop UPDD before identification using Stop-UPDD.cmd in the package.";
                 if(profile.Width>0 && screens.Length>0 && (screens[chosen].Bounds.Width!=profile.Width||screens[chosen].Bounds.Height!=profile.Height))details.Text+="\nThe display resolution has changed. Review the layout before starting.";
+                return true;
             }
-            catch(Exception ex) { Status("Device detection failed: "+ex.Message,true); }
+            catch(Exception ex) { Status("Device detection failed: "+ex.Message,true);return false; }
         }
         void LayoutChanged() { first.Title.Text=layout.SelectedIndex==1?"TOP SCREEN":"LEFT SCREEN";second.Title.Text=layout.SelectedIndex==1?"BOTTOM SCREEN":"RIGHT SCREEN";preview.Invalidate(); }
         PixelRect[] Regions()
@@ -218,6 +282,7 @@ namespace SurroundTouch
                 if(String.IsNullOrEmpty(d.Path))throw new InvalidOperationException("Windows did not expose a stable identity for "+d.Name+". Save a diagnostic report.");
                 if(result.ContainsKey(d.Path))throw new InvalidOperationException("Each screen must use a different touch controller.");
                 Native.RECT p,r;if(!Native.GetPointerDeviceRects(d.Handle,out p,out r))throw new InvalidOperationException("A touch controller disconnected. Refresh devices.");
+                d.Source=r.Pixels;d.HasRect=true;
                 var role=roles[i].ReadRole();
                 var map=new Mapping { DevicePath=d.Path,Source=r.Pixels,Target=regions[i],Rotation=role.Rotation,FlipX=role.FlipX,FlipY=role.FlipY,MinX=role.MinX,MinY=role.MinY,MaxX=role.MaxX,MaxY=role.MaxY };
                 map.Validate();result.Add(d.Path,map);
@@ -238,27 +303,103 @@ namespace SurroundTouch
             if(display.SelectedIndex<0)throw new InvalidOperationException("Select a display.");var s=screens[display.SelectedIndex];
             profile=new Profile { Display=s.DeviceName,Width=s.Bounds.Width,Height=s.Bounds.Height,X=s.Bounds.X,Y=s.Bounds.Y,Vertical=layout.SelectedIndex==1,SplitPercent=(int)split.Value,Gap=(int)gap.Value,First=first.ReadRole(),Second=second.ReadRole() };profile.Save();
         }
-        void TrySave() { try { SaveProfile();Status("Profile saved. Correction starts only when you press Start.",false); }catch(Exception ex) { Status(ex.Message,true); } }
+        void TrySave() { try { SaveProfile();Status("Profile saved. "+(appSettings.ResumeCorrection?"It will resume automatically on the next launch after layout checks.":"Press Start correction to apply it."),false); }catch(Exception ex) { Status(ex.Message,true); } }
+        void LoadProfile()
+        {
+            using(var dialog=new OpenFileDialog { Filter="SurroundTouch profile (*.json)|*.json",Title="Load a touchscreen profile" })
+            {
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                try
+                {
+                    Profile loaded=Profile.Load(dialog.FileName);
+                    loaded.Save();profile=loaded;RefreshDevices();
+                    Status("Loaded "+Path.GetFileName(dialog.FileName)+". Review assignments, then press Start correction.",false);
+                }
+                catch(Exception ex) { Status("Could not load profile: "+ex.Message,true); }
+            }
+        }
+        void ExportProfile()
+        {
+            using(var dialog=new SaveFileDialog { Filter="SurroundTouch profile (*.json)|*.json",FileName="SurroundTouch-profile.json",Title="Save a named touchscreen profile" })
+            {
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                try { SaveProfile();profile.Save(dialog.FileName);Status("Profile saved as "+Path.GetFileName(dialog.FileName)+".",false); }
+                catch(Exception ex) { Status("Could not save profile: "+ex.Message,true); }
+            }
+        }
+        void TryRestore()
+        {
+            if(!restoring)return;
+            bool detected=RefreshDevices();
+            string problem="Waiting for Windows to enumerate the saved display and USB touch controllers.";
+            if(detected&&display.SelectedIndex>=0)
+            {
+                Rectangle bounds=screens[display.SelectedIndex].Bounds;
+                TouchDevice a=first.SelectedDevice,b=second.SelectedDevice;
+                problem=profile.RestoreProblem(screens[display.SelectedIndex].DeviceName,new PixelRect(bounds.X,bounds.Y,bounds.Width,bounds.Height),a==null?null:a.Identity,b==null?null:b.Identity);
+                if(problem==null&&devices.Exists(d=>d.IsUpdd))problem="UPDD virtual touch is present. Stop the other mapper before starting correction.";
+                if(problem==null)
+                {
+                    CancelRestore();StartCorrection();return;
+                }
+            }
+            if(DateTime.UtcNow>=restoreDeadline)
+            {
+                CancelRestore();Status("Automatic restore paused: "+problem,true);
+                tray.ShowBalloonTip(8000,"SurroundTouch needs attention",problem,ToolTipIcon.Warning);ShowWindow();
+            }
+            else Status("Automatic restore: "+problem+" Stop cancels automatic restore.",false);
+        }
+        void OpenDriverCheck()
+        {
+            if(busy||restoring) { Status("Stop correction before checking the physical touch driver.",true);return; }
+            if(testForm!=null&&!testForm.IsDisposed) { testForm.Close(); }
+            try
+            {
+                Rectangle bounds=display.SelectedIndex>=0?screens[display.SelectedIndex].Bounds:Screen.PrimaryScreen.Bounds;
+                PixelRect[] regions;
+                try { regions=Regions(); }catch { regions=new[]{new PixelRect(bounds.X,bounds.Y,bounds.Width,bounds.Height)}; }
+                testForm=new TestForm(bounds,regions,false,true);testForm.Show(this);
+                Status("Driver check: hold two fingers on each panel, then one on each together. Close with Esc, then save a diagnostic report.",false);
+            }
+            catch(Exception ex) { Status(ex.Message,true); }
+        }
         void OpenTest()
         {
             if(testForm!=null&&!testForm.IsDisposed) { testForm.Activate();return; }
             try { var regions=Regions();testForm=new TestForm(screens[display.SelectedIndex].Bounds,regions,busy);testForm.Show(this); }catch(Exception ex) { Status(ex.Message,true); }
         }
-        void SaveDiagnostics()
+        async void SaveDiagnostics()
         {
+            if(reportBusy)return;
             using(var dialog=new SaveFileDialog { Filter="Text report (*.txt)|*.txt",FileName="SurroundTouch-diagnostics.txt" })
-                if(dialog.ShowDialog(this)==DialogResult.OK)try { File.WriteAllText(dialog.FileName,Program.Diagnostics(),Encoding.UTF8);Status("Diagnostic report saved.",false); }catch(Exception ex) { Status(ex.Message,true); }
+            {
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                string path=dialog.FileName;reportBusy=true;Status("Collecting the driver report in the background…",false);
+                try
+                {
+                    string report=await Task.Run<string>(Program.Diagnostics);
+                    await Task.Run(delegate { File.WriteAllText(path,report,Encoding.UTF8); });
+                    if(!IsDisposed)Status("Diagnostic report saved.",false);
+                }
+                catch(Exception ex) { if(!IsDisposed)Status(ex.Message,true); }
+                finally { reportBusy=false; }
+            }
         }
         protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e);Native.WTSRegisterSessionNotification(Handle,0); }
         protected override void OnHandleDestroyed(EventArgs e) { Native.WTSUnRegisterSessionNotification(Handle);base.OnHandleDestroyed(e); }
         protected override void WndProc(ref Message m)
         {
+            if(Program.ShowMessage!=0&&(uint)m.Msg==Program.ShowMessage) { ShowWindow();m.Result=IntPtr.Zero;return; }
             // Check actual controller handles when PnP changes. Our injection device
             // also produces these broadcasts and must not stop a healthy receiver.
             if(engine!=null && m.Msg==0x0219 && (m.WParam.ToInt64()==0x8004||m.WParam.ToInt64()==7))engine.CheckDevices();
-            if(engine!=null && (m.Msg==0x007E || m.Msg==0x02B1 || (m.Msg==0x0218&&m.WParam.ToInt64()==4)))
+            long session=m.WParam.ToInt64();
+            bool sessionEnded=m.Msg==0x02B1&&(session==2||session==4||session==6||session==7); // disconnect, logoff, lock
+            if(engine!=null && (m.Msg==0x007E || sessionEnded || (m.Msg==0x0218&&session==4)))
             {
-                if(engine.Running||busy) { engine.Stop("Display or session changed. Refresh and verify the layout before restarting.");busy=false;SetRunning(false); }
+                CancelRestore();
+                if(engine.Running||busy)engine.Stop("Display or session changed. Refresh and verify the layout before restarting.");
             }
             base.WndProc(ref m);
         }
@@ -285,7 +426,13 @@ namespace SurroundTouch
         }
         public void SetDevices(List<TouchDevice> items) { device.Items.Clear();foreach(var d in items)if(d.IsPhysical)device.Items.Add(d); }
         public void SelectDevice(string path) { device.SelectedIndex=-1;for(int i=0;i<device.Items.Count;i++)if(String.Equals(((TouchDevice)device.Items[i]).Path,path,StringComparison.OrdinalIgnoreCase)&&!String.IsNullOrEmpty(path))device.SelectedIndex=i; }
-        public RoleProfile ReadRole() { return new RoleProfile { Path=SelectedDevice==null?"":SelectedDevice.Path,Rotation=rotation.SelectedIndex*90,FlipX=flipX.Checked,FlipY=flipY.Checked,MinX=(double)minX.Value/100,MaxX=(double)maxX.Value/100,MinY=(double)minY.Value/100,MaxY=(double)maxY.Value/100 }; }
+        public RoleProfile ReadRole()
+        {
+            RoleProfile role=SelectedDevice==null?new RoleProfile():SelectedDevice.Identity;
+            role.Rotation=rotation.SelectedIndex*90;role.FlipX=flipX.Checked;role.FlipY=flipY.Checked;
+            role.MinX=(double)minX.Value/100;role.MaxX=(double)maxX.Value/100;role.MinY=(double)minY.Value/100;role.MaxY=(double)maxY.Value/100;
+            return role;
+        }
         public void LoadRole(RoleProfile p)
         {
             SelectDevice(p.Path);rotation.SelectedIndex=p.Rotation>=0&&p.Rotation<=270&&p.Rotation%90==0?p.Rotation/90:0;flipX.Checked=p.FlipX;flipY.Checked=p.FlipY;

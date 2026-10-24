@@ -1,85 +1,84 @@
 # SurroundTouch
 
-SurroundTouch is a Windows desktop application that assigns two independent touchscreen controllers to two regions of one combined display. For your NVIDIA Surround desktop, the left controller should cover the left panel and the right controller should cover the right panel, while both remain usable together.
+A Windows 10/11 application that maps two independent touchscreen controllers to two regions of one combined desktop, including NVIDIA Surround. Both screens can be touched at the same time.
 
-The application is installed and working on this PC. The user confirmed accurate simultaneous touch on both physical CoolTouch panels, accurate edges and the center seam, release without stuck contacts, and accurate touch in ordinary Windows applications on both screens.
+[Download the Windows x64 build](https://github.com/idagcc/SurroundTouch/releases/tag/v1.1.0). Extract the ZIP and run `Install.cmd`; see the installation and validation notes below.
 
-## Start here
+## Update prepared on 24 October 2026
 
-**From a Git checkout:** run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1` before `Install.cmd`. The repository contains source and build scripts; executables, generated package checksums, signing material, logs, and local hardware profiles are excluded from Git. To run the pure tests without desktop input injection, use `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1`.
+- Lower idle overhead and less allocation in the touch loop. Queued movement is merged within a Windows history read while presses, releases, cancellations, and independent controller contacts retain their order.
+- **Start at Windows sign-in**, **Resume saved correction on launch**, and tray operation.
+- **Load profile…** and **Save profile as…** for switching and backing up configurations.
+- **Touch driver check** with automatic observation of simultaneous contacts, plus a report containing HID identities, advertised contact limits, driver versions, Device Manager errors, and runtime counters.
 
-Use a mouse and keyboard for the first setup. Keep both screens' USB touch connections connected as well as their video cables.
+Both Windows executable variants compile and 656 automated assertions pass on macOS using Mono. This update has **not been run on Windows or tested with physical touch panels**. Earlier hands-on success with the previous build does not validate this update. See `TEST-RESULTS.txt` for the precise boundary and benchmark results.
 
-**On this PC, setup and physical testing are complete. Keep SurroundTouch running for correction. After restarting Windows, open it from Start and press Start correction with all fingers lifted; the tested profile is already saved.**
+## Install or update on Windows
 
-An earlier attempt to identify the right panel stopped immediately after the left succeeded. The revised build avoids creating an injection device during Identify and checks real controllers before reacting to generic device notifications. The user has now confirmed that both identification steps succeed.
+1. Extract the complete package to a local folder. For an existing installation, use **Exit** from the SurroundTouch tray menu before running this package's `Uninstall.cmd`. Older builds can be closed normally. Per-user profiles are retained.
+2. Run `Install.cmd` and review the installation disclosure. Windows requires a trusted, signed executable installed in Program Files for global touch routing. Setup signs the supplied executables locally and creates a Start menu shortcut.
+3. Open **SurroundTouch** from that installed shortcut. Use a mouse and keyboard for setup. Connect each panel's USB touch cable as well as its video cable.
+4. Select the combined display, side-by-side or stacked arrangement, split percentage, and any actual desktop bezel compensation.
+5. Use **Identify by touch** to assign the physical first and second panels. Two detected controllers do not reveal which one is physically on the left: verify the assignments rather than relying on enumeration order. Leave rotation at 0°, flips off, and input ranges at 0–100% unless the touch test shows adjustment is needed.
+6. Lift all fingers, press **Start correction**, and use **Test touch** to check both panels, edges, corners, and simultaneous contact. Starting correction saves the current profile.
 
-The update was installed at **22:08:33 Dubai time** on 23 October 2026. Its signature is valid, its normal app window opened, and installed diagnostics at 22:08:55 confirmed **UI Access: True** and **exactly two CoolTouch controllers**, with no UPDD or synthetic digitizer listed before identification.
+From a source checkout, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1` first. The ready-to-install update archive includes unsigned package executables; `Install.cmd` creates the signed installed copies. Do not overwrite an installed executable directly: changes invalidate its signature.
 
-1. On another PC where UPDD is still installed, run `Stop-UPDD.cmd` and approve its Windows elevation prompt before testing. See the UPDD note below if physical touch remains unavailable. Skip this step on this PC, where UPDD has been uninstalled.
-2. Open `Install.cmd` from this package on the target PC. Read its installation disclosure and approve Windows elevation if you accept it. Setup installs the application into `C:\Program Files\SurroundTouch` and creates a Start menu shortcut; it does not start correction.
-3. Open **SurroundTouch** from the installed Start menu shortcut. Opening the unsigned package copy is not the installed launch path. The window should report that Windows UI Access is enabled.
-4. Select the combined display. For the configuration observed on this PC, use **2160 × 1920**, **Side by side**, **50%**, and **0 px bezel gap**. That assigns **1080 × 1920** pixels to each panel.
-5. Leave rotation at **0°**, both flips off, and each input range at **0–100%** initially. A portrait panel does not automatically require 90° here: Windows or the controller may already supply rotated coordinates.
-6. Click **Identify by touch** for **LEFT SCREEN**, then tap the physical left panel once. Lift your finger. Repeat for **RIGHT SCREEN** and the physical right panel. Identification times out after 20 seconds. The two roles must use different controllers.
-7. Lift every finger, click **Start correction**, then **Test touch**. Follow the acceptance checks below. Save the profile once the assignments are correct.
+## Start automatically after a restart
 
-**Stop** or **Ctrl + Alt + F10** ends correction. Closing the main application also stops it. Windows then receives its original touch routing again; this restores the previous mapping, including any previous inaccuracy. **Esc** closes the touch test without stopping correction.
+After confirming a working profile:
 
-The app must remain running while correction is wanted. It does not add automatic startup, a background service, or a device driver.
+1. Enable **Start at Windows sign-in** in the installed application.
+2. Enable **Resume saved correction on launch**.
+3. Press **Save profile** if you changed any configuration.
 
-`tested-profile.json` in the local delivery package is a backup for this PC's tested controllers and display; it is not committed to Git. To restore it, close SurroundTouch, copy it to `%LOCALAPPDATA%\SurroundTouch\profile.json`, and reopen the installed app. Re-identify the panels if USB connections or display geometry change.
+At the next Windows sign-in, the app opens in the notification tray. It waits up to 60 seconds for the saved USB controllers and display, checking every three seconds. Correction resumes only when both controller identities, the display name, resolution, position, and controllers' Windows display mappings match the saved profile. It shows the window and an explanation if these checks do not succeed. **Stop** cancels a pending restore.
 
-## UPDD on this PC
+Older profiles still load. Press **Start correction** once in the new build to save the additional source-layout confirmation needed for automatic restore. Moving a USB connection can change its identity; re-identify and verify the panels in that case.
 
-The initial inspection on 23 October 2026 found two physical **CoolTouch** controllers reporting 10 contacts each and two **UPDD virtual** controllers reporting 64 contacts each. UPDD was in evaluation mode with a 200-touch limit, and both controller assignments were set to segment 1. Those virtual controllers are additional software devices, not two more physical panels.
+Startup is per Windows user and occurs after sign-in, outside the secure logon desktop. Windows may delay startup or disable an entry in its Startup Apps settings. If it does not launch, check that Windows allows SurroundTouch to run at startup. The two startup options are independent: launching the tray app alone does not enable correction.
 
-Run only one touch mapper at a time. SurroundTouch excludes known UPDD virtual controllers from screen selection, rejects identification through them, and suppresses their duplicate runtime events. Identify the physical CoolTouch controllers after UPDD is stopped. If identification reports that UPDD is still supplying touch, or tapping produces no events, finish resolving the UPDD/native-driver conflict before trusting the result.
+Closing or minimizing the main window keeps the app in the tray. Double-click its tray icon or reopen the installed shortcut to show it. Use **Stop**, **Ctrl + Alt + F10** while correction is active, or tray **Exit** to restore original Windows touch routing. Exit stops this launch; disabling startup requires clearing the sign-in checkbox. Display changes, controller failures, session lock/disconnect/logoff, and suspend stop correction and require review before restarting it.
 
-Stopping the UPDD service alone did not resolve identification on this PC: the service was stopped while its HID filter remained running. With the user's authorization, the vendor uninstaller was then run. Its log reported **success, all components removed, and no restart required** on 23 October 2026 at 22:00:29 Dubai time (18:00:29 UTC). The UPDD folder, uninstall entry, application service, and `upddhx` registration are gone. Three residual driver-service registrations remain stopped.
+## Load and save profiles
 
-Diagnostics after removal showed **UI Access: True**, the **2160×1920** display, and **two physical CoolTouch controllers**. No UPDD virtual touch devices remained. After the application update, the user confirmed both physical controller assignments and accurate simultaneous corrected touch.
+**Save profile** updates `%LOCALAPPDATA%\SurroundTouch\profile.json`, used for the next launch. **Save profile as…** also creates a named JSON backup anywhere you choose. **Load profile…** imports a validated JSON profile and makes it the default for the next launch; review its assignments and press Start correction to apply it now. Stop correction before switching configurations.
 
-For PCs where UPDD remains installed, `Stop-UPDD.cmd` and `Start-UPDD.cmd` control its service with administrator approval without changing startup type; a reboot can restart it. Stop SurroundTouch before restarting UPDD. These helpers cannot restore UPDD after vendor uninstallation and are no longer needed on this PC.
+Profiles contain display layout, controller identities, rotation, flips, and crop settings. Startup preferences are kept separately in `settings.json`. Importing a profile does not alter the startup preferences. Invalid or oversized imports are rejected, and saves use a temporary file and atomic replacement.
 
-## Check that the result is correct
+## Check a new touch driver or panel
 
-Use the full-screen **Test touch** view with correction active:
+The touch path uses the Windows pointer interface and has no ASUS-specific brand check. It can work with generic, CoolTouch, and other panels whose installed drivers expose Windows touchscreen contacts. Compatibility depends on the interface supplied by the driver.
 
-- Tap the target centers on each panel, then touch near all four edges and corners of each physical screen. The yellow marker should stay under your finger throughout that panel, including near the center seam.
-- Hold one finger on each panel simultaneously. **Active** should show 2. Move one finger while keeping the other still; both markers should remain present in the correct panels.
-- Drag on each panel, hold still for several seconds, and lift. **Active** should return to 0 after all fingers are lifted, without a stuck marker.
-- Try more fingers up to the capabilities of the panels and target application. Verify that touching one panel does not cancel a held contact on the other.
-- Close the test with Esc, stop correction, and confirm that the old Windows behavior returns. Start again with all fingers lifted and repeat a two-panel check.
+1. Stop correction, then open **Touch driver check**. This local test also works in the portable diagnostics executable without global UI Access installation.
+2. Hold two fingers on the first panel inside the test, then repeat on the second. Hold one finger on each panel together. The test automatically measures the maximum simultaneous contacts; its report distinguishes per-controller contacts from distinct controllers active together.
+3. Move, hold still, and lift. All markers should disappear on release. Press **Esc** to close the test and retain observations for this app launch.
+4. Use **Save diagnostic report** in the same running app. The report includes the last test, physical pointer controllers, raw digitizer HID collections and VID/PID, advertised two-touch capacity, installed HID driver providers/versions/INF names/signing flags, HID/USB Device Manager errors, and current process/runtime counters. Driver inventory runs in the background only when requested.
 
-If the panels are exchanged, stop and use **Swap screens**. If motion goes in the wrong direction, stop and adjust that panel's rotation or flips, then repeat the edge checks. Rotations are clockwise; flips are applied before rotation. Change one setting at a time.
+A reported limit of two or more contacts is an advertised capability; observing two real contacts verifies delivery. A test performed with correction active measures injected input and is labeled accordingly. An incomplete test does not prove that hardware is single-touch. If the raw Windows mapping puts touch outside the local test window, that test cannot observe it; inspect the report and fix Windows calibration first.
 
-Use a nonzero **Bezel gap** only when NVIDIA's combined desktop actually includes hidden pixels for bezel compensation. An ordinary physical plastic bezel does not itself require a pixel gap. Input range controls are optional crop/calibration bounds; keep them at 0–100% unless measurements show that the controller uses a smaller portion of its reported range.
+Mouse-emulation-only, serial-only, or proprietary drivers that expose no Windows touch input require a compatible vendor driver or HID/multi-touch mode. The app cannot infer a second finger from a single mouse cursor. If no physical controller appears, inspect the USB data cable, Device Manager, and the vendor's driver settings. This update does not install or replace a hardware driver.
 
-## Installation and trust
+Run one touch mapper at a time. Known UPDD virtual duplicates and the app's synthetic digitizer are excluded. If UPDD still supplies virtual input or blocks physical contacts, resolve that conflict first. `Stop-UPDD.cmd` and `Start-UPDD.cmd` control the existing UPDD service with elevation; stopping the service can leave its HID filter active. Vendor removal should use the vendor's own procedure.
 
-Windows requires UI Access for the API used to receive touch across applications. This includes a trusted Authenticode signature and a protected installation location. [Microsoft: pointer redirection](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpointerinputtarget), [Microsoft: UIAccess requirements](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview).
+## Verify the Windows result
 
-Setup creates a unique local code-signing certificate, signs the two application executables, deletes the temporary nonexportable private key, and places the public certificate in this PC's **Trusted Root Certification Authorities** and **Trusted Publishers** stores. The certificate lasts ten years. This is a machine-level trust change and requires administrator approval. It establishes local installation integrity; it is not a signature from a verified commercial publisher. Install only a package whose source you trust.
+- With correction active, check targets, edges, corners, the seam, and ordinary target applications on both panels.
+- Hold one finger on each panel. Move one while holding the other still; both contacts must remain present. Lift every finger and verify Active returns to zero.
+- Stop and restart correction. Check that tray Exit restores original input and that reopening the installed app restores the saved setup when enabled.
+- Restart Windows and confirm the app launches in the tray and resumes the verified profile. Test missing USB controllers or a changed display layout; correction should wait or show a reason for pausing.
+- To investigate slowdown, export a report from the **running app** after reproducing it. Counters include injection retries, slow input reads, history merging, CPU time, memory, and garbage collections. A separate command-line diagnostics process has its own fresh runtime counters.
 
-Setup does not disable Secure Boot, enable test signing, weaken Windows' protected-location policy, or download additional code. `package-hashes.json` detects package corruption; its checksums are not independent publisher authentication.
+Queued movement is reduced to the latest positions between contact lifecycle boundaries within one message history. No extra input delay or smoothing filter is introduced. Applications needing every intermediate drawing sample should be checked for drawing fidelity as part of acceptance.
 
-Keep this package for removal or recovery. To remove the application, close its main window and run the package's `Uninstall.cmd`. This version does not create a Windows Installed Apps entry. Uninstall removes the application, shortcut, and the exact locally created certificate. It retains per-user profiles and exported diagnostics. The profile is stored at `%LOCALAPPDATA%\SurroundTouch\profile.json`.
+## Installation trust, removal, and limits
 
-Setup saves its protected recovery record at `C:\Program Files\SurroundTouch.InstallState\state.json` before adding certificate trust. The record identifies the exact certificate and staging directory for cleanup. Do not delete it manually while the application or its local certificate remains installed. On systems with a different Program Files location, setup uses that location instead.
+Setup creates a unique local code-signing certificate, signs only the two application executables, deletes the temporary nonexportable private key, and adds the public certificate to this PC's Trusted Root Certification Authorities and Trusted Publishers stores. It lasts ten years. This requires administrator approval and establishes local installation integrity, not a verified commercial publisher identity. Review the source and setup disclosure. [Microsoft UIAccess requirements](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview).
 
-## Diagnostics, limits, and current validation
+Setup does not disable Secure Boot, enable test signing, weaken Windows' protected-location policy, or download application code. Package hashes detect accidental package corruption; they are not independent publisher authentication. Recovery metadata is stored in `%ProgramFiles%\SurroundTouch.InstallState\state.json` until removal finishes.
 
-`SurroundTouch.Diagnostics.exe` can open the UI, inspect devices, and display the local touch test without installation. It **cannot start global correction or global identification** because its manifest does not request UI Access. Use **Save diagnostic report** to export device identities, reported ranges, display geometry, privilege status, and recent status messages. The bounded `%LOCALAPPDATA%\SurroundTouch\status.log` stores app status, not touch coordinates.
+Use tray **Exit**, then run this package's `Uninstall.cmd` to remove the app, shortcut, and exact local certificate. Uninstall removes matching startup commands in loaded user accounts and retains profiles and reports. Disable startup in any other user accounts before removal; unloaded user registry hives are not edited. No Windows Installed Apps entry is created.
 
-Correction applies to the current interactive Windows desktop. Logon and the UAC secure desktop are outside this application's scope. Applications that require raw hardware input or reject injected touch, including some games, may not work. Ordinary mouse-only applications generally have one primary mouse interaction; remapping cannot make them support two independent mouse cursors. Contact area and orientation metadata are not preserved by this version.
+Global correction requires the signed installed UIAccess app; `SurroundTouch.Diagnostics.exe` supports read-only inspection and local tests. Secure desktops are outside scope. Apps requiring raw hardware input or rejecting injected touch may not work. Mouse-only apps do not gain two independent mouse cursors. Contact area and orientation metadata are not preserved.
 
-After a display change, disconnect, suspend/session change, or input error, review the status, refresh devices, and verify the assignments before restarting. Do not assume a saved profile remains correct after moving USB connections or changing Surround resolution.
-
-Validation so far:
-
-- **Passed:** C#5 compilation, 606 core assertions, x64 interop and enumeration checks, and installation on 23 October 2026 at 21:56 Dubai time (17:56 UTC). Both installed signatures are valid; application/recovery directories have protected administrator-owned permissions; the exact public certificate is present in both trust stores and its temporary private certificate is absent. Installed diagnostics at 21:57 reported **UI Access token: True**, and the main window opened.
-- **Physical checks passed, confirmed by the user:** both controllers identify; both markers follow fingers accurately with Active=2; edges, corners and seam are accurate; lifting returns Active to 0 without stuck contacts; ordinary Windows applications respond accurately on both screens.
-- **Not separately verified:** stopping/restarting correction, recovery after reboot, and every possible target application. Earlier restricted-environment and automated UI test limitations do not replace the successful hands-on results above.
-
-Source code, build instructions, the optional Windows integration test, and API references are in `TECHNICAL.md`.
+The previous build was reported working on 23 October 2026 with two 10-contact CoolTouch controllers and a 2160×1920 combined desktop using equal 1080×1920 side-by-side regions after UPDD removal. Those observations are historical and specific to that PC. See `TECHNICAL.md` for implementation details and `tests/run-tests.ps1` for the default tests and optional interactive Windows test.

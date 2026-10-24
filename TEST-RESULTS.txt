@@ -1,42 +1,60 @@
-SurroundTouch validation: 23 October 2026
+SurroundTouch runtime/startup/driver diagnostics update — 24 October 2026
 
-PASS: Both application variants compile with the .NET Framework x64 compiler.
-PASS: 606 core assertions, rerun after the identification fix.
-PASS: Native structure layouts and controller enumeration checked.
-PASS: Installer parses under Windows PowerShell 5.1.
-PASS: Filesystem-state installer and subsequent update completed successfully.
-PASS: Installed executable signatures Valid; UI Access token True.
-PASS: App/recovery folders have protected administrator-owned permissions.
-PASS: Exact public certificate trusted; temporary private signing key removed.
-PASS: Start menu shortcut targets the installed Program Files executable.
-PASS: UPDD removed through its registered vendor uninstaller; no reboot requested.
-      UPDD app service, filter registration and virtual touch devices are gone.
-      Three residual vendor driver-service registrations are stopped.
-PASS: Updated app remains running and responding.
+Validation host: macOS ARM64; Mono 6.14.1; C# language version 5;
+.NET Framework 4.5 reference assemblies; application builds target Windows x64.
+This update has NOT been run on Windows or installed on the target PC.
 
-USER-VERIFIED PHYSICAL RESULTS:
-PASS: LEFT and RIGHT identification select distinct physical CoolTouch controllers.
-PASS: Both touch markers follow the user's fingers accurately; Active shows 2.
-PASS: Accurate touch near panel edges, corners, and center seam.
-PASS: Held contacts release cleanly; Active returns to 0 without stuck contacts.
-PASS: Accurate touch in ordinary Windows applications on both screens.
-PASS: Saved profile contains distinct controller assignments for 2160x1920,
-      side by side, equal halves; backed up as tested-profile.json.
+PASSED
+- Both Windows executable variants compile, optimized, warnings as errors.
+- Built PE resources verified: x64, file version resource, manifest version
+  1.1.0.0, UIAccess=true for the app and false for the diagnostics executable.
+  This checks embedded metadata, not actual UIAccess privileges on Windows.
+- Interactive WindowsIntegration entry point compiles; NOT executed.
+- CoreTests: 606 assertions (mapping and contact lifecycle).
+- RuntimeTests: 50 assertions (history coalescing/lifecycle boundaries/failure
+  recovery, profile persistence/restore checks, contact observation and x64 ABI).
+- Total: 656 passing assertions. No desktop input was injected.
+- A synthetic backlog of 2,000 movement frames emits one latest movement frame,
+  retains the other controller, and preserves subsequent release/cancel events.
 
-The identification fix avoids creating a synthetic input device during Identify,
-initializes injection once per application, excludes virtual devices from physical
-selection/validation, and checks relevant controllers on device broadcasts.
-The installer no longer requires an application registry key; protected recovery
-metadata is at %ProgramFiles%\SurroundTouch.InstallState\state.json.
+PURE MANAGED BENCHMARK — five alternating runs, medians, same Mac/Mono
+                            Before       After        Gen0 before/after
+200,000 two-contact moves   297.68 ms    253.31 ms          74 / 33
+1,000,000 held-contact Tick 119.61 ms      2.16 ms          55 / 0
+The output checksum matches. These measure only managed pipeline work and
+allocation pressure. They do not measure Windows performance or touch latency.
+Source: tests/CoreBenchmark.cs. Raw run output is in the workspace work/
+runtime-optimization-tests/benchmark-runs.json.
 
-Validation limits:
-- Physical results above were performed and explicitly confirmed by the user.
-- Stop/restart correction, reboot recovery and every target app were not retested.
-- WindowsIntegration compiled but its interactive test was not successfully run.
-  An early restricted-environment attempt returned error 6; computer-use tooling
-  subsequently rejected its launch and inspection of SurroundTouch's UI.
-  These restrictions do not replace the successful final hands-on results.
-- Raw-hardware-only apps and secure desktop/logon are outside the verified scope.
+CODE-LEVEL CHANGES REQUIRING WINDOWS ACCEPTANCE
+- Configured idle receiver timer: 25 ms -> 1,000 ms (40 -> 1 wakeup/sec).
+  Active-contact timer: 30 ms, keeping held-contact updates.
+- Reusable native buffers, reduced pipeline allocations, within-read movement
+  merging, UI activity throttling, asynchronous stop and report collection.
+- Per-user Windows sign-in registration; independent automatic profile restore;
+  USB enumeration retry up to 60 seconds; identity/geometry checks; tray behavior.
+- Named profile import/export and atomic default-profile persistence.
+- Raw HID, pointer-device and WMI driver inventories, Device Manager errors,
+  original-input two-finger/per-controller observations, runtime counters.
 
-Reproduce pure tests, with no desktop injection:
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+STILL NEEDS WINDOWS VERIFICATION
+- Installer signing/trust and uninstall/startup cleanup in user registry hives.
+- App UI, DPI/scrolling/tray controls and reopening an existing instance.
+- Startup after reboot with immediate and delayed USB device arrival.
+- Missing/swapped controllers, changed display bounds and source mapping.
+- Native pointer capture/history and injection; retry behavior and jitter under
+  actual load; CPU/memory when idle, moving and holding contacts.
+- Physical simultaneous touch, clean releases, capture loss, Ctrl+Alt+F10,
+  display/session/suspend handling, and drawing fidelity in target apps.
+- New panel's Windows HID/multi-touch driver and physical two-finger delivery.
+
+The prior 23 October 2026 build was reported working by the user with two
+CoolTouch controllers and a 2160x1920 combined desktop after UPDD removal.
+That historical physical result does not validate this update.
+
+REPRODUCE
+Windows: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+Optional pure benchmark: add -RunBenchmark.
+Optional native interactive injection test: add -RunIntegration on Windows;
+stop other remappers and keep the test window uncovered.
+macOS/Linux: install Mono and Python 3, then sh tests/run-tests.sh.

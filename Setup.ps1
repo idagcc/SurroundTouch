@@ -237,10 +237,33 @@ function Invoke-Uninstall {
     Assert-AppDirectory $state.StagingDirectory
     $running = @(Get-CimInstance Win32_Process -Filter "Name = 'SurroundTouch.exe' OR Name = 'SurroundTouch.Diagnostics.exe'" |
         Where-Object { $_.ExecutablePath -and ([IO.Path]::GetDirectoryName($_.ExecutablePath) -eq $installDirectory) })
-    if ($running.Count -gt 0) { throw 'Close the SurroundTouch application window completely, then run uninstall again.' }
+    if ($running.Count -gt 0) { throw 'Choose Exit from the SurroundTouch tray menu, then run uninstall again. Closing the window keeps the app running.' }
     foreach ($storeName in @('TrustedPublisher', 'Root', 'My')) {
         $certificatePath = 'Cert:\LocalMachine\' + $storeName + '\' + $state.SigningThumbprint
         if (Test-Path -LiteralPath $certificatePath) { Assert-Certificate (Get-Item -LiteralPath $certificatePath) $state }
+    }
+    # Elevation may use a different account. Remove only our exact command from
+    # loaded user hives, leaving every unrelated startup entry untouched.
+    $startupCommand = '"' + (Join-Path $installDirectory 'SurroundTouch.exe') + '" --startup'
+    foreach ($sid in [Microsoft.Win32.Registry]::Users.GetSubKeyNames()) {
+        if ($sid -notmatch '^S-1-(?:5-21|12-1)(?:-\d+)+$') { continue }
+        $runPath = $sid + '\Software\Microsoft\Windows\CurrentVersion\Run'
+        $key = [Microsoft.Win32.Registry]::Users.OpenSubKey($runPath)
+        $ours = $false
+        if ($null -ne $key) {
+            try { $ours = [string]::Equals([string]$key.GetValue('SurroundTouch'), $startupCommand, [StringComparison]::OrdinalIgnoreCase) }
+            finally { $key.Dispose() }
+        }
+        if ($ours) {
+            $key = [Microsoft.Win32.Registry]::Users.OpenSubKey($runPath, $true)
+            if ($null -ne $key) {
+                try {
+                    if ([string]::Equals([string]$key.GetValue('SurroundTouch'), $startupCommand, [StringComparison]::OrdinalIgnoreCase)) {
+                        $key.DeleteValue('SurroundTouch', $false)
+                    }
+                } finally { $key.Dispose() }
+            }
+        }
     }
     Remove-OwnedShortcut
     Remove-OwnedDirectory $installDirectory
@@ -421,7 +444,7 @@ try {
         if ($Mode -eq 'Install') {
             $message = "Install SurroundTouch for all users?`r`n`r`nWindows requires a trusted signature and a protected location for system-wide touch routing. Setup installs into " + $installDirectory + ".`r`n`r`nIt creates a unique local code-signing certificate, signs only the two application executables, deletes its nonexportable private key, and adds the public certificate to this computer's Trusted Root Certification Authorities and Trusted Publishers. The certificate is valid for 10 years. Uninstall removes this exact trust.`r`n`r`nOnly install this package if you trust its source. Locally generated signing proves installation integrity; it does not identify a verified publisher. Administrator approval is required. No touch routing starts during setup."
         } else {
-            $message = 'Uninstall SurroundTouch, its Start menu shortcut, and its exact local signing certificate? Close the application first. Per-user settings and diagnostics will be retained.'
+            $message = 'Uninstall SurroundTouch, its Start menu shortcut, startup entries in loaded user accounts, and its exact local signing certificate? Choose Exit from its tray menu first. Per-user settings and diagnostics will be retained.'
         }
         $choice = [Windows.Forms.MessageBox]::Show($message, 'SurroundTouch setup', [Windows.Forms.MessageBoxButtons]::OKCancel, [Windows.Forms.MessageBoxIcon]::Information)
         if ($choice -ne [Windows.Forms.DialogResult]::OK) { exit 0 }

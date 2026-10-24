@@ -124,6 +124,11 @@ namespace SurroundTouch
         public const int MaximumContacts = 256;
         private readonly Action<InjectedContact[]> send;
         private Dictionary<ContactKey, ContactState> active = new Dictionary<ContactKey, ContactState>();
+        private InjectedContact[] keepalive;
+        private readonly bool[] usedIds = new bool[MaximumContacts + 1];
+        private readonly List<TouchSample> copy = new List<TouchSample>();
+        private readonly List<TouchSample> frame = new List<TouchSample>();
+        private readonly HashSet<ContactKey> keys = new HashSet<ContactKey>();
 
         public TouchPipeline(Action<InjectedContact[]> send)
         {
@@ -137,7 +142,7 @@ namespace SurroundTouch
         {
             if (samples == null) throw new ArgumentNullException("samples");
             // Materialize first: a malformed input cannot partially update state.
-            List<TouchSample> copy = new List<TouchSample>();
+            copy.Clear(); frame.Clear(); keys.Clear();
             foreach (TouchSample item in samples)
             {
                 if (item == null) throw new ArgumentException("A touch sample is null.", "samples");
@@ -149,8 +154,6 @@ namespace SurroundTouch
             }
             // A repeated key denotes a later event, not another member of one frame.
             // This preserves Down -> Move -> Up when several events are delivered at once.
-            List<TouchSample> frame = new List<TouchSample>();
-            HashSet<ContactKey> keys = new HashSet<ContactKey>();
             foreach (TouchSample sample in copy)
             {
                 ContactKey key = new ContactKey(sample.Device, sample.Id);
@@ -178,14 +181,17 @@ namespace SurroundTouch
             if (active.Count + additions > MaximumContacts)
                 throw new InvalidOperationException("This touch frame exceeds the supported maximum of 256 contacts.");
 
-            Dictionary<ContactKey, ContactState> beforeRelease = Clone(active);
+            Dictionary<ContactKey, ContactState> beforeRelease = null;
             bool needsMove = false;
             foreach (TouchSample sample in samples)
             {
                 ContactState state;
-                if (sample.Phase == TouchPhase.Up && beforeRelease.TryGetValue(new ContactKey(sample.Device, sample.Id), out state)
+                ContactKey key = new ContactKey(sample.Device, sample.Id);
+                if (sample.Phase == TouchPhase.Up && active.TryGetValue(key, out state)
                     && state.Position != sample.Position)
                 {
+                    if (beforeRelease == null) beforeRelease = Clone(active);
+                    state = beforeRelease[key];
                     state.Position = sample.Position;
                     state.Pressure = sample.Pressure;
                     needsMove = true;
@@ -197,6 +203,7 @@ namespace SurroundTouch
                 // Move there first, then commit it independently of the later release.
                 send(BuildFrame(beforeRelease, null));
                 active = beforeRelease;
+                keepalive = null;
             }
 
             Dictionary<ContactKey, ContactState> next = Clone(active);
@@ -235,11 +242,16 @@ namespace SurroundTouch
             send(output);
             foreach (ContactKey key in ended) next.Remove(key);
             active = next;
+            keepalive = null;
         }
 
         public void Tick()
         {
-            if (active.Count != 0) send(BuildFrame(active, null));
+            if (active.Count != 0)
+            {
+                if (keepalive == null) keepalive = BuildFrame(active, null);
+                send(keepalive);
+            }
         }
 
         public void CancelAll()
@@ -249,6 +261,7 @@ namespace SurroundTouch
             foreach (ContactKey key in active.Keys) phases[key] = TouchPhase.Cancel;
             send(BuildFrame(active, phases));
             active.Clear();
+            keepalive = null;
         }
 
         /// <summary>
@@ -264,13 +277,14 @@ namespace SurroundTouch
             if (phases.Count == 0) return;
             send(BuildFrame(active, phases));
             foreach (ContactKey key in phases.Keys) active.Remove(key);
+            keepalive = null;
         }
 
-        private static uint AllocateId(Dictionary<ContactKey, ContactState> contacts)
+        private uint AllocateId(Dictionary<ContactKey, ContactState> contacts)
         {
-            bool[] used = new bool[MaximumContacts + 1];
-            foreach (ContactState contact in contacts.Values) used[contact.Id] = true;
-            for (uint id = 1; id <= MaximumContacts; id++) if (!used[id]) return id;
+            Array.Clear(usedIds, 0, usedIds.Length);
+            foreach (ContactState contact in contacts.Values) usedIds[contact.Id] = true;
+            for (uint id = 1; id <= MaximumContacts; id++) if (!usedIds[id]) return id;
             throw new InvalidOperationException("No injection contact ID is available.");
         }
 
@@ -286,17 +300,18 @@ namespace SurroundTouch
         private static InjectedContact[] BuildFrame(Dictionary<ContactKey, ContactState> contacts,
             Dictionary<ContactKey, TouchPhase> phases)
         {
-            List<InjectedContact> result = new List<InjectedContact>();
+            InjectedContact[] result = new InjectedContact[contacts.Count];
+            int index = 0;
             foreach (KeyValuePair<ContactKey, ContactState> item in contacts)
             {
                 TouchPhase phase = TouchPhase.Move;
                 TouchPhase requestedPhase;
                 if (phases != null && phases.TryGetValue(item.Key, out requestedPhase)) phase = requestedPhase;
-                result.Add(new InjectedContact { Id = item.Value.Id, Position = item.Value.Position,
-                    Phase = phase, Pressure = item.Value.Pressure });
+                result[index++] = new InjectedContact { Id = item.Value.Id, Position = item.Value.Position,
+                    Phase = phase, Pressure = item.Value.Pressure };
             }
-            result.Sort(delegate(InjectedContact a, InjectedContact b) { return a.Id.CompareTo(b.Id); });
-            return result.ToArray();
+            Array.Sort(result, delegate(InjectedContact a, InjectedContact b) { return a.Id.CompareTo(b.Id); });
+            return result;
         }
 
         private sealed class ContactState

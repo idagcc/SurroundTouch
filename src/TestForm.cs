@@ -11,41 +11,63 @@ namespace SurroundTouch
         readonly Dictionary<uint,Point> contacts=new Dictionary<uint,Point>();
         readonly Queue<Point> trail=new Queue<Point>();
         readonly bool corrected;
+        readonly bool driverCheck;
+        readonly TouchObservation observation=new TouchObservation();
+        readonly List<TouchSample> observedFrame=new List<TouchSample>(16);
+        readonly Dictionary<IntPtr,string> sourceNames=new Dictionary<IntPtr,string>();
+        readonly Native.TOUCH[] frame=new Native.TOUCH[256];
+        readonly Timer paintTimer=new Timer { Interval=33 };
+        bool dirty;
         int total,max;
-        public TestForm(Rectangle bounds,PixelRect[] regions,bool corrected)
+        public TestForm(Rectangle bounds,PixelRect[] regions,bool corrected,bool driverCheck=false)
         {
-            this.regions=regions;this.corrected=corrected;
+            this.regions=regions;this.corrected=corrected;this.driverCheck=driverCheck;
             Text="SurroundTouch — touch test";FormBorderStyle=FormBorderStyle.None;StartPosition=FormStartPosition.Manual;Bounds=bounds;TopMost=true;KeyPreview=true;
             BackColor=Color.FromArgb(13,24,40);ForeColor=Color.White;DoubleBuffered=true;
             KeyDown+=delegate(object sender,KeyEventArgs e) { if(e.KeyCode==Keys.Escape)Close(); };
             MouseDown+=delegate(object sender,MouseEventArgs e) { if(e.Y<70&&e.X>ClientSize.Width-160)Close(); };
+            foreach(TouchDevice d in Native.Devices())sourceNames[d.Handle]=d.Name+" | "+d.Path;
+            paintTimer.Tick+=delegate { if(dirty) { dirty=false;Invalidate(); } };paintTimer.Start();
+            FormClosed+=delegate { paintTimer.Dispose();DriverDiagnostics.LastTest=observation.Report(corrected); };
         }
         protected override void WndProc(ref Message m)
         {
             if(m.Msg==0x0245||m.Msg==0x0246||m.Msg==0x0247)
             {
-                uint id=(uint)(m.WParam.ToInt64()&0xffff);Native.TOUCH touch;
-                if(Native.GetPointerTouchInfo(id,out touch))
+                uint id=(uint)(m.WParam.ToInt64()&0xffff),count=(uint)frame.Length;
+                if(Native.GetPointerFrameTouchInfo(id,ref count,frame))
                 {
-                    var p=touch.pointerInfo;Point at=PointToClient(new Point(p.ptPixelLocation.X,p.ptPixelLocation.Y));
-                    if((p.pointerFlags&Native.DOWN)!=0) { total++;if(at.Y<70&&at.X>ClientSize.Width-160) { Close();m.Result=IntPtr.Zero;return; } }
-                    if((p.pointerFlags&(Native.UP|Native.CANCELED))!=0)contacts.Remove(id);else contacts[id]=at;
-                    max=Math.Max(max,contacts.Count);trail.Enqueue(at);while(trail.Count>1800)trail.Dequeue();Invalidate();
+                    observedFrame.Clear();
+                    for(int i=0;i<count&&i<frame.Length;i++)
+                    {
+                        var p=frame[i].pointerInfo;id=p.pointerId;Point at=PointToClient(new Point(p.ptPixelLocation.X,p.ptPixelLocation.Y));
+                        if((p.pointerFlags&Native.DOWN)!=0) { total++;if(at.Y<70&&at.X>ClientSize.Width-160) { Close();m.Result=IntPtr.Zero;return; } }
+                        string source;
+                        if(!sourceNames.TryGetValue(p.sourceDevice,out source))source="Source handle "+p.sourceDevice.ToInt64();
+                        TouchPhase phase=(p.pointerFlags&Native.CANCELED)!=0?TouchPhase.Cancel:(p.pointerFlags&Native.UP)!=0?TouchPhase.Up:(p.pointerFlags&Native.DOWN)!=0?TouchPhase.Down:TouchPhase.Move;
+                        if(phase==TouchPhase.Up||phase==TouchPhase.Cancel)contacts.Remove(id);
+                        else if(phase==TouchPhase.Down||(p.pointerFlags&Native.INCONTACT)!=0)contacts[id]=at;
+                        observedFrame.Add(new TouchSample { Id=id,Device=source,Phase=phase });
+                        trail.Enqueue(at);while(trail.Count>600)trail.Dequeue();
+                    }
+                    observation.RecordFrame(observedFrame);max=Math.Max(max,contacts.Count);
+                    dirty=true;
+                    Native.SkipPointerFrameMessages((uint)(m.WParam.ToInt64()&0xffff));
                 }
                 m.Result=IntPtr.Zero;return;
             }
-            if(m.Msg==0x024C) { contacts.Clear();Invalidate(); }
+            if(m.Msg==0x024C) { contacts.Clear();observation.ClearActive();dirty=true; }
             base.WndProc(ref m);
         }
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);Graphics g=e.Graphics;g.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using(var font=new Font("Segoe UI",20,FontStyle.Bold))g.DrawString("Touch accuracy test",font,Brushes.White,28,18);
+            using(var font=new Font("Segoe UI",20,FontStyle.Bold))g.DrawString(driverCheck?"Touch driver check":"Touch accuracy test",font,Brushes.White,28,18);
             using(var font=new Font("Segoe UI",12))
             {
                 g.DrawString("Close / Esc",font,Brushes.White,ClientSize.Width-140,24);
                 g.DrawString((corrected?"Correction active":"Original Windows input")+"   |   Active: "+contacts.Count+"   Maximum simultaneous: "+max+"   Touches: "+total,font,Brushes.LightSteelBlue,28,72);
-                g.DrawString("Touch the targets and draw across each screen. Hold a finger on BOTH screens together. Dots should stay under your fingers.",font,Brushes.LightSteelBlue,28,102);
+                g.DrawString(driverCheck?"Hold TWO fingers on each panel, then ONE on each together. Two-touch: "+(observation.PeakContacts>=2?"observed":"waiting")+". Esc saves results for the report.":"Touch the targets and draw across each screen. Hold a finger on BOTH screens together. Dots should stay under your fingers.",font,Brushes.LightSteelBlue,28,102);
             }
             using(var pen=new Pen(Color.FromArgb(42,66,91),1))
             {

@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = (Join-Path ([IO.Path]::GetTempPath()) ('SurroundTouch-tests-' + [Guid]::NewGuid().ToString('N'))),
-    [switch]$RunIntegration
+    [switch]$RunIntegration,
+    [switch]$RunBenchmark
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -28,9 +29,9 @@ $arguments = $commonArguments + @(('/out:' + $coreExecutable), '/main:CoreTests'
 if ($LASTEXITCODE -ne 0) { throw ('Core test compilation failed: ' + $LASTEXITCODE) }
 
 $integrationExecutable = Join-Path $resolvedOutput 'WindowsIntegration.exe'
-$arguments = $commonArguments + @('/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
+$arguments = $commonArguments + @('/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Runtime.Serialization.dll',
     ('/win32manifest:' + (Join-Path $packageDirectory 'diagnostics.manifest')), '/main:SurroundTouch.WindowsIntegration',
-    ('/out:' + $integrationExecutable), $core, (Join-Path $packageDirectory 'src\Native.cs'), (Join-Path $PSScriptRoot 'WindowsIntegration.cs'))
+    ('/out:' + $integrationExecutable), $core, (Join-Path $packageDirectory 'src\Native.cs'), (Join-Path $packageDirectory 'src\Profile.cs'), (Join-Path $packageDirectory 'src\RuntimeStats.cs'), (Join-Path $PSScriptRoot 'WindowsIntegration.cs'))
 & $compiler $arguments
 if ($LASTEXITCODE -ne 0) { throw ('Windows integration test compilation failed: ' + $LASTEXITCODE) }
 
@@ -40,6 +41,32 @@ $coreExitCode = $LASTEXITCODE
 $coreOutput | Set-Content -LiteralPath $coreReport -Encoding UTF8
 $coreOutput | ForEach-Object { Write-Host $_ }
 if ($coreExitCode -ne 0) { throw ('Core tests failed. See ' + $coreReport) }
+
+$runtimeExecutable = Join-Path $resolvedOutput 'RuntimeTests.exe'
+$sourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $packageDirectory 'src') -Filter '*.cs' -File | Sort-Object Name | ForEach-Object FullName)
+$arguments = $commonArguments + @('/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
+    '/reference:System.Runtime.Serialization.dll', '/reference:System.Management.dll', '/main:SurroundTouch.RuntimeTests',
+    ('/out:' + $runtimeExecutable), (Join-Path $PSScriptRoot 'RuntimeTests.cs')) + $sourceFiles
+& $compiler $arguments
+if ($LASTEXITCODE -ne 0) { throw ('Runtime test compilation failed: ' + $LASTEXITCODE) }
+$runtimeOutput = @(& $runtimeExecutable 2>&1)
+$runtimeExitCode = $LASTEXITCODE
+$runtimeReport = Join-Path $resolvedOutput 'RuntimeTests-report.txt'
+$runtimeOutput | Set-Content -LiteralPath $runtimeReport -Encoding UTF8
+$runtimeOutput | ForEach-Object { Write-Host $_ }
+if ($runtimeExitCode -ne 0) { throw ('Runtime tests failed. See ' + $runtimeReport) }
+
+if ($RunBenchmark) {
+    $benchmarkExecutable = Join-Path $resolvedOutput 'CoreBenchmark.exe'
+    $arguments = $commonArguments + @('/main:CoreBenchmark', ('/out:' + $benchmarkExecutable), $core, (Join-Path $PSScriptRoot 'CoreBenchmark.cs'))
+    & $compiler $arguments
+    if ($LASTEXITCODE -ne 0) { throw ('Benchmark compilation failed: ' + $LASTEXITCODE) }
+    $benchmarkOutput = @(& $benchmarkExecutable 2>&1)
+    $benchmarkExitCode = $LASTEXITCODE
+    $benchmarkOutput | Set-Content -LiteralPath (Join-Path $resolvedOutput 'CoreBenchmark-report.txt') -Encoding UTF8
+    $benchmarkOutput | ForEach-Object { Write-Host $_ }
+    if ($benchmarkExitCode -ne 0) { throw 'Benchmark failed.' }
+}
 
 if ($RunIntegration) {
     Write-Host 'Opening the interactive touch-injection test. Stop other touch remappers first and keep its window uncovered.'
