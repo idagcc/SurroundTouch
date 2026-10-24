@@ -2,16 +2,18 @@
 
 A Windows 10/11 application that maps two independent touchscreen controllers to two regions of one combined desktop, including NVIDIA Surround. Both screens can be touched at the same time.
 
-[Download the Windows x64 build](https://github.com/idagcc/SurroundTouch/releases/tag/v1.1.0). Extract the ZIP and run `Install.cmd`; see the installation and validation notes below.
+[Download the Windows x64 update (1.1.2)](https://github.com/idagcc/SurroundTouch/releases/tag/v1.1.2). Download `SurroundTouch-1.1.2-quiet-reconnect-update.zip` from the release assets, extract the complete ZIP, and run `Install.cmd`; see the update instructions below for existing installations.
 
-## Update prepared on 24 October 2026
+## Version 1.1.2 — update prepared on 24 October 2026
 
+- Quiet event notifications: small, silent notices that dismiss themselves, with no focus changes or modal prompts.
+- Automatic recovery from USB touch interruptions, retaining calibration and controller assignments. Expired touch reads release the affected gesture while healthy touch input continues.
 - Lower idle overhead and less allocation in the touch loop. Queued movement is merged within a Windows history read while presses, releases, cancellations, and independent controller contacts retain their order.
 - **Start at Windows sign-in**, **Resume saved correction on launch**, and tray operation.
 - **Load profile…** and **Save profile as…** for switching and backing up configurations.
 - **Touch driver check** with automatic observation of simultaneous contacts, plus a report containing HID identities, advertised contact limits, driver versions, Device Manager errors, and runtime counters.
 
-Both Windows executable variants compile and 656 automated assertions pass on macOS using Mono. This update has **not been run on Windows or tested with physical touch panels**. Earlier hands-on success with the previous build does not validate this update. See `TEST-RESULTS.txt` for the precise boundary and benchmark results.
+Both Windows executable variants compile and 719 automated assertions pass on macOS using Mono. This update has **not been run on Windows or tested with physical touch panels**. Earlier hands-on success with the previous build does not validate this update. See `TEST-RESULTS.txt` for the precise boundary and benchmark results.
 
 ## Install or update on Windows
 
@@ -32,13 +34,25 @@ After confirming a working profile:
 2. Enable **Resume saved correction on launch**.
 3. Press **Save profile** if you changed any configuration.
 
-At the next Windows sign-in, the app opens in the notification tray. It waits up to 60 seconds for the saved USB controllers and display, checking every three seconds. Correction resumes only when both controller identities, the display name, resolution, position, and controllers' Windows display mappings match the saved profile. It shows the window and an explanation if these checks do not succeed. **Stop** cancels a pending restore.
+At the next Windows sign-in, the app opens in the notification tray. It waits up to 60 seconds for the saved USB controllers and display, checking every three seconds. Correction resumes only when both controller identities, the display name, resolution, position, and controllers' Windows display mappings match the saved profile. It gives a quiet notice and records an explanation in the app if these checks do not succeed; it does not bring the main window to the front. **Stop** cancels a pending restore.
 
 Older profiles still load. Press **Start correction** once in the new build to save the additional source-layout confirmation needed for automatic restore. Moving a USB connection can change its identity; re-identify and verify the panels in that case.
 
 Startup is per Windows user and occurs after sign-in, outside the secure logon desktop. Windows may delay startup or disable an entry in its Startup Apps settings. If it does not launch, check that Windows allows SurroundTouch to run at startup. The two startup options are independent: launching the tray app alone does not enable correction.
 
-Closing or minimizing the main window keeps the app in the tray. Double-click its tray icon or reopen the installed shortcut to show it. Use **Stop**, **Ctrl + Alt + F10** while correction is active, or tray **Exit** to restore original Windows touch routing. Exit stops this launch; disabling startup requires clearing the sign-in checkbox. Display changes, controller failures, session lock/disconnect/logoff, and suspend stop correction and require review before restarting it.
+Closing or minimizing the main window keeps the app in the tray. Double-click its tray icon or reopen the installed shortcut to show it. Use **Stop**, **Ctrl + Alt + F10** while correction is active or waiting to reconnect, or tray **Exit** to restore original Windows touch routing. Exit stops this launch; disabling startup requires clearing the sign-in checkbox. Display/layout changes, unrecoverable injection failures, session lock/disconnect/logoff, and suspend stop correction and require review before restarting it.
+
+## Automatic touch reconnection
+
+Once correction is running, a temporary controller disconnect no longer requires recalibration. The app releases interrupted contacts, retains your calibration, and waits for both assigned controllers. It checks when Windows reports a device change and retries about once per second while waiting, with no timeout. When the same controller identities and Windows display mappings return, correction resumes automatically, including when Windows gives the controllers new temporary handles. This works independently of **Resume saved correction on launch**.
+
+An expired touch read ends the affected gesture and checks the connections; a healthy other panel can continue. After a controller reconnects, lift and touch again to start a new gesture. Old queued touch history is discarded. While either assigned controller is missing, corrected input is paused on both panels and the app shows a waiting message. Stop, the emergency shortcut, and Exit cancel recovery.
+
+The returning controller is reassigned automatically to its original screen, including updating the app's device selections with its new Windows handle. No Identify, Refresh or calibration step is needed.
+
+Notices are designed for live events: interruptions under three seconds stay silent. Longer interruptions can show one small “Touch is back” summary when recovered; if still waiting after eight seconds, a “Reconnecting touch…” notice explains what happened. Notices make no sound, do not take focus, and disappear after six seconds. Routine notices have a one-minute cooldown; an announced outage can still show its recovery confirmation. Repeated waiting checks never repeat a notice. A changed layout or another issue requiring review gets one quiet “Touch needs a quick check” notice with a short explanation. Click **Open SurroundTouch** in the notice for details; the app never forces the main window open for these events.
+
+A different controller identity, USB-port identity change, or changed display mapping cannot silently inherit a panel's calibration. The app waits for the assigned controller, or stops with an explanation when the mapping has changed. Review assignments only when hardware or layout actually changes. Redundant Windows display notifications do not interrupt correction when the saved display layout is unchanged.
 
 ## Load and save profiles
 
@@ -67,6 +81,9 @@ Run one touch mapper at a time. Known UPDD virtual duplicates and the app's synt
 - Hold one finger on each panel. Move one while holding the other still; both contacts must remain present. Lift every finger and verify Active returns to zero.
 - Stop and restart correction. Check that tray Exit restores original input and that reopening the installed app restores the saved setup when enabled.
 - Restart Windows and confirm the app launches in the tray and resumes the verified profile. Test missing USB controllers or a changed display layout; correction should wait or show a reason for pausing.
+- With correction active, unplug one panel's USB touch cable while holding contacts on both panels. Confirm contacts release, reconnect to the same port, and verify correction resumes without Identify or recalibration. Repeat on the other panel, reconnect both in reverse order, and test several brief interruptions. Check edges and simultaneous touch after each reconnect.
+- During an event, verify brief dropouts produce no popup, longer outages produce one silent notice, recovery updates the message, and repeated flapping does not spam notifications. Confirm the event application retains keyboard focus, notices dismiss after six seconds, and clicking Open SurroundTouch opens the app.
+- Press Stop while a cable is disconnected, then reconnect it. Correction must stay stopped. Repeat with Ctrl + Alt + F10 and tray Exit. Changing the display layout or Windows controller mapping must still require review.
 - To investigate slowdown, export a report from the **running app** after reproducing it. Counters include injection retries, slow input reads, history merging, CPU time, memory, and garbage collections. A separate command-line diagnostics process has its own fresh runtime counters.
 
 Queued movement is reduced to the latest positions between contact lifecycle boundaries within one message history. No extra input delay or smoothing filter is introduced. Applications needing every intermediate drawing sample should be checked for drawing fidelity as part of acceptance.

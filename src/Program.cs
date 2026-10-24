@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -58,7 +59,7 @@ namespace SurroundTouch
         internal static string Diagnostics()
         {
             StringBuilder b=new StringBuilder();
-            b.AppendLine("SurroundTouch diagnostics 1.1"); b.AppendLine("UTC: "+DateTime.UtcNow.ToString("O"));
+            b.AppendLine("SurroundTouch diagnostics 1.1.2"); b.AppendLine("UTC: "+DateTime.UtcNow.ToString("O"));
             b.AppendLine("OS: "+Environment.OSVersion+" | process: "+(IntPtr.Size*8)+" bit");
             b.AppendLine("UI Access token: "+Native.HasUIAccess());
             b.AppendLine("Native sizes: POINTER_INFO="+Marshal.SizeOf(typeof(Native.POINTER_INFO))+" TOUCH="+Marshal.SizeOf(typeof(Native.TOUCH))+" DEVICE="+Marshal.SizeOf(typeof(Native.DEVICE)));
@@ -104,6 +105,10 @@ namespace SurroundTouch
         readonly CheckBox launchAtSignIn=new CheckBox(),resume=new CheckBox();
         readonly NotifyIcon tray=new NotifyIcon();
         readonly System.Windows.Forms.Timer restoreTimer=new System.Windows.Forms.Timer { Interval=3000 };
+        readonly System.Windows.Forms.Timer noticeTimer=new System.Windows.Forms.Timer { Interval=1000 };
+        readonly TouchNoticePolicy noticePolicy=new TouchNoticePolicy();
+        readonly Stopwatch noticeClock=Stopwatch.StartNew();
+        readonly TouchNotice notice;
         AppSettings appSettings=new AppSettings();
         bool preferencesReady,exiting,restoring,reportBusy;
         DateTime restoreDeadline;
@@ -156,9 +161,33 @@ namespace SurroundTouch
             activity.Text="Emergency stop: Ctrl + Alt + F10";activity.Dock=DockStyle.Fill;activity.ForeColor=Muted;bottom.Controls.Add(activity);
             var diagnostic=new LinkLabel { Text="Save diagnostic report",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight };bottom.Controls.Add(diagnostic);root.Controls.Add(bottom);
             setup.AddRange(new Control[]{display,layout,split,gap,first,second,refresh,swap,save,load,saveAs,drivers});
+            notice=new TouchNotice(ShowWindow);
             engine=new TouchEngine(this);
-            engine.Stopped=delegate(string reason) { busy=false; SetRunning(false); Status(reason,false);if(startupLaunch&&!Visible)tray.ShowBalloonTip(6000,"SurroundTouch",reason,ToolTipIcon.Info); };
-            engine.Started=delegate { if(busy)Status("Correction active. Close or minimize this window to keep running in the tray.",false); };
+            engine.Stopped=delegate(string reason,bool needsAttention)
+            {
+                if(exiting)return;
+                bool wasBusy=busy;busy=false;SetRunning(false);Status(reason,needsAttention);
+                noticePolicy.Cancel();notice.Dismiss();
+                tray.Text=needsAttention?"SurroundTouch — needs attention":"SurroundTouch — correction stopped";
+                if(wasBusy&&needsAttention)notice.Present(noticePolicy.Attention(reason,noticeClock.ElapsedMilliseconds),reason);
+            };
+            engine.Started=delegate { if(busy) { tray.Text="SurroundTouch — correction active";Status("Correction active. Close or minimize this window to keep running in the tray.",false); } };
+            engine.ConnectionChanged=delegate(bool waiting,List<TouchDevice> current)
+            {
+                if(!busy||exiting)return;
+                if(waiting)noticePolicy.Waiting(noticeClock.ElapsedMilliseconds);
+                else
+                {
+                    // Keep the visible assignments in sync with replacement Windows
+                    // handles, preserving the operator's crop/rotation/flip settings.
+                    RoleProfile a=first.ReadRole(),b=second.ReadRole();devices=current;
+                    first.SetDevices(current);second.SetDevices(current);first.LoadRole(a);second.LoadRole(b);
+                    notice.Present(noticePolicy.Recovered(noticeClock.ElapsedMilliseconds));
+                }
+                tray.Text=waiting?"SurroundTouch — reconnecting touch":"SurroundTouch — correction active";
+                Status(waiting?"Touch connection interrupted. Waiting to reconnect automatically; calibration is retained. Stop cancels recovery.":
+                    "Touch reconnected. Correction resumed with your existing calibration. Lift and touch again to begin a new gesture.",false);
+            };
             engine.Activity=delegate(int contacts,long frames) { if(busy) { status.Text="Correction active  ·  "+contacts+" contacts  ·  "+frames+" frames";status.ForeColor=Color.FromArgb(0,118,86); } };
             start.Click+=delegate { StartCorrection(); }; stop.Click+=delegate { EmergencyStop(); };
             refresh.Click+=delegate { RefreshDevices(); };save.Click+=delegate { TrySave(); };swap.Click+=delegate { var a=first.ReadRole();first.LoadRole(second.ReadRole());second.LoadRole(a); };
@@ -184,6 +213,8 @@ namespace SurroundTouch
             tray.DoubleClick+=delegate { ShowWindow(); };
             Resize+=delegate { if(WindowState==FormWindowState.Minimized)Hide(); };
             restoreTimer.Tick+=delegate { TryRestore(); };
+            noticeTimer.Tick+=delegate { if(busy&&!exiting)notice.Present(noticePolicy.Poll(noticeClock.ElapsedMilliseconds)); };
+            noticeTimer.Start();
             layout.SelectedIndexChanged+=delegate { LayoutChanged(); };display.SelectedIndexChanged+=delegate { LayoutChanged(); };split.ValueChanged+=delegate { preview.Invalidate(); };gap.ValueChanged+=delegate { preview.Invalidate(); };
             Shown+=delegate
             {
@@ -203,8 +234,8 @@ namespace SurroundTouch
             };
             FormClosing+=delegate(object sender,FormClosingEventArgs e)
             {
-                if(e.CloseReason==CloseReason.UserClosing&&!exiting) { e.Cancel=true;Hide();tray.ShowBalloonTip(4000,"SurroundTouch","Running in the tray. Use Stop or Exit from the tray menu.",ToolTipIcon.Info);return; }
-                restoreTimer.Dispose();engine.Dispose();if(testForm!=null)testForm.Close();tray.Visible=false;tray.Dispose();menu.Dispose();
+                if(e.CloseReason==CloseReason.UserClosing&&!exiting) { e.Cancel=true;Hide();return; }
+                exiting=true;noticeTimer.Dispose();notice.Dispose();restoreTimer.Dispose();engine.Dispose();if(testForm!=null)testForm.Close();tray.Visible=false;tray.Dispose();menu.Dispose();
             };
             stop.Enabled=false;
         }
@@ -213,7 +244,7 @@ namespace SurroundTouch
         void SetRunning(bool value) { foreach(Control c in setup)c.Enabled=!value;start.Enabled=!value;stop.Enabled=value; }
         void ShowWindow() { Show();WindowState=FormWindowState.Normal;Activate(); }
         void CancelRestore() { bool wasRestoring=restoring;restoring=false;restoreTimer.Stop();if(wasRestoring&&!busy)SetRunning(false); }
-        public void EmergencyStop() { CancelRestore();engine.Stop("Stopped. Windows is receiving the original touch input."); }
+        public void EmergencyStop() { CancelRestore();noticePolicy.Cancel();notice.Dismiss();engine.Stop("Stopped. Windows is receiving the original touch input."); }
         bool RefreshDevices()
         {
             try
@@ -293,6 +324,7 @@ namespace SurroundTouch
         {
             try
             {
+                noticePolicy.Cancel();notice.Dismiss();
                 var mappings=Mappings();SaveProfile();busy=true;SetRunning(true);Status("Starting touch correction…",false);
                 engine.Start(devices,mappings,null);
             }
@@ -346,7 +378,8 @@ namespace SurroundTouch
             if(DateTime.UtcNow>=restoreDeadline)
             {
                 CancelRestore();Status("Automatic restore paused: "+problem,true);
-                tray.ShowBalloonTip(8000,"SurroundTouch needs attention",problem,ToolTipIcon.Warning);ShowWindow();
+                tray.Text="SurroundTouch — needs attention";
+                notice.Present(noticePolicy.Attention(problem,noticeClock.ElapsedMilliseconds),problem);
             }
             else Status("Automatic restore: "+problem+" Stop cancels automatic restore.",false);
         }
@@ -394,12 +427,20 @@ namespace SurroundTouch
             // Check actual controller handles when PnP changes. Our injection device
             // also produces these broadcasts and must not stop a healthy receiver.
             if(engine!=null && m.Msg==0x0219 && (m.WParam.ToInt64()==0x8004||m.WParam.ToInt64()==7))engine.CheckDevices();
+            if(engine!=null&&m.Msg==0x007E&&profile!=null&&Array.Exists(Screen.AllScreens,delegate(Screen screen)
+                { Rectangle r=screen.Bounds;return profile.MatchesDisplay(screen.DeviceName,new PixelRect(r.X,r.Y,r.Width,r.Height)); }))
+            {
+                // Windows may broadcast a display change while re-enumerating
+                // hardware even though our saved layout has not changed.
+                engine.CheckDevices();base.WndProc(ref m);return;
+            }
             long session=m.WParam.ToInt64();
             bool sessionEnded=m.Msg==0x02B1&&(session==2||session==4||session==6||session==7); // disconnect, logoff, lock
             if(engine!=null && (m.Msg==0x007E || sessionEnded || (m.Msg==0x0218&&session==4)))
             {
                 CancelRestore();
-                if(engine.Running||busy)engine.Stop("Display or session changed. Refresh and verify the layout before restarting.");
+                if(engine.Running||busy)engine.Stop(m.Msg==0x007E?"Display layout changed. Refresh and verify the layout before restarting.":
+                    "Windows session changed. Verify the layout before restarting correction.",true);
             }
             base.WndProc(ref m);
         }

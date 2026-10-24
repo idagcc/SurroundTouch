@@ -21,11 +21,13 @@ namespace SurroundTouch
         volatile Receiver receiver;
         volatile bool stopping;
         volatile string requestedStopReason;
+        volatile bool requestedStopNeedsAttention;
         int generation;
         public volatile bool Running;
-        public Action<string> Stopped;
+        public Action<string,bool> Stopped;
         public Action Started;
         public Action<int,long> Activity;
+        public Action<bool,List<TouchDevice>> ConnectionChanged;
         public TouchEngine(Control dispatcher) { ui=dispatcher; }
         void Dispatch(Action action) { if(!ui.IsDisposed && ui.IsHandleCreated)try { ui.BeginInvoke(action); } catch(InvalidOperationException) { } }
         static void EnsureInjectionInitialized()
@@ -52,6 +54,7 @@ namespace SurroundTouch
             if(Running||thread!=null)throw new InvalidOperationException("Touch receiver is already starting or running.");
             if(!Native.HasUIAccess())throw new InvalidOperationException("Install SurroundTouch first using Install.cmd, then open the installed shortcut. Windows requires signed UI Access for touch correction across applications.");
             stopping=false;
+            requestedStopNeedsAttention=false;
             int currentGeneration=Interlocked.Increment(ref generation);
             requestedStopReason="Stopped";
             thread=new Thread(delegate()
@@ -73,27 +76,30 @@ namespace SurroundTouch
                 {
                     if(current!=null && current.Reason!=null)reason=current.Reason;
                     TouchDevice identified=current==null?null:current.IdentifiedDevice;
+                    bool needsAttention=current==null||current.NeedsAttention;
+                    if(stopping)needsAttention=requestedStopNeedsAttention;
                     Running=false; receiver=null; thread=null;
                     // Notify only after the worker and its global registration are gone.
                     // This also permits the UI to start the next identification step.
                     Dispatch(delegate
                     {
                         if(currentGeneration!=generation)return;
-                        if(Stopped!=null)Stopped(reason);
+                        if(Stopped!=null)Stopped(reason,needsAttention);
                         if(identified!=null && identify!=null)identify(identified);
                     });
                 }
             });
             thread.IsBackground=true; thread.Name="SurroundTouch input"; thread.SetApartmentState(ApartmentState.STA); thread.Start();
         }
-        public void Stop(string reason)
+        public void Stop(string reason,bool needsAttention=false)
         {
             requestedStopReason=reason;
+            requestedStopNeedsAttention=needsAttention;
             stopping=true;
             Thread worker=thread;
             Receiver r=receiver;
             if(r!=null && r.Handle!=IntPtr.Zero)PostMessage(r.Handle,0x8001,IntPtr.Zero,IntPtr.Zero);
-            if(worker==null && Stopped!=null)Stopped(reason);
+            if(worker==null && Stopped!=null)Stopped(reason,needsAttention);
         }
         public void CheckDevices()
         {
@@ -118,6 +124,7 @@ namespace SurroundTouch
             readonly Action<TouchDevice> identify;
             readonly TouchPipeline pipeline;
             readonly TouchFrameBatch batch;
+            readonly TouchRecovery recovery;
             readonly List<TouchSample> samples=new List<TouchSample>(16);
             Native.TOUCH[] frameBuffer=new Native.TOUCH[256],historyBuffer=new Native.TOUCH[0];
             readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
@@ -132,6 +139,7 @@ namespace SurroundTouch
             long lastFrameCount=-1;
             DateTime start=DateTime.UtcNow,lastActivity=DateTime.MinValue,lastDeviceCheck=DateTime.UtcNow;
             public string Reason;
+            public bool NeedsAttention=true;
             public TouchDevice IdentifiedDevice;
             public Receiver(TouchEngine owner,List<TouchDevice> source,Dictionary<string,Mapping> mappings,Action<TouchDevice> identify)
             {
@@ -139,6 +147,14 @@ namespace SurroundTouch
                 foreach(TouchDevice d in source)devices[d.Handle]=d;
                 pipeline=new TouchPipeline(delegate(InjectedContact[] contacts) { Native.Inject(contacts);lastInjection=Stopwatch.GetTimestamp(); });
                 batch=new TouchFrameBatch(pipeline.Process);
+                recovery=new TouchRecovery(source,mappings,ResetInput,delegate(bool waiting)
+                {
+                    var current=waiting?null:new List<TouchDevice>(recovery.Devices.Values);
+                    owner.Dispatch(delegate
+                    {
+                        if(!done&&!owner.stopping&&recovery.Waiting==waiting&&owner.ConnectionChanged!=null)owner.ConnectionChanged(waiting,current);
+                    });
+                });
                 CreateHandle(new CreateParams { Caption="SurroundTouch input receiver",Parent=new IntPtr(-3) });
             }
             public void Begin()
@@ -158,7 +174,7 @@ namespace SurroundTouch
                     {
                         if(owner.stopping) { End(owner.requestedStopReason); return; }
                         if(identify!=null && (DateTime.UtcNow-start).TotalSeconds>20) { End("Identification timed out. Tap the requested physical screen within 20 seconds."); return; }
-                        if((DateTime.UtcNow-lastDeviceCheck).TotalSeconds>=5)
+                        if((DateTime.UtcNow-lastDeviceCheck).TotalSeconds>=(recovery.Waiting?1:5))
                         {
                             lastDeviceCheck=DateTime.UtcNow;
                             ValidateDevices();
@@ -172,10 +188,10 @@ namespace SurroundTouch
             }
             protected override void WndProc(ref Message m)
             {
-                if(m.Msg==0x8001 || m.Msg==0x0312) { End(m.Msg==0x0312?"Stopped with Ctrl+Alt+F10":owner.requestedStopReason); m.Result=IntPtr.Zero; return; }
+                if(m.Msg==0x8001 || m.Msg==0x0312) { End(m.Msg==0x0312?"Stopped with Ctrl+Alt+F10":owner.requestedStopReason,m.Msg!=0x0312&&owner.requestedStopNeedsAttention); m.Result=IntPtr.Zero; return; }
                 if(m.Msg==0x8002)
                 {
-                    if(!done)try { ValidateDevices(); } catch(Exception ex) { End("Correction stopped: "+Describe(ex)); }
+                    if(!done)try { if(owner.stopping)End(owner.requestedStopReason);else ValidateDevices(); } catch(Exception ex) { End("Correction stopped: "+Describe(ex)); }
                     m.Result=IntPtr.Zero; return;
                 }
                 if(m.Msg==0x024C)
@@ -185,7 +201,26 @@ namespace SurroundTouch
                 }
                 if(m.Msg==0x0245 || m.Msg==0x0246 || m.Msg==0x0247 || m.Msg==0x0241 || m.Msg==0x0242 || m.Msg==0x0243)
                 {
-                    if(!done)try { ReadFrames((uint)(m.WParam.ToInt64()&0xffff)); } catch(Exception ex) { End("Correction stopped: "+Describe(ex)); }
+                    if(!done)try
+                    {
+                        if(owner.stopping)End(owner.requestedStopReason);
+                        else ReadFrames((uint)(m.WParam.ToInt64()&0xffff));
+                    }
+                    catch(TouchReadFailure ex)
+                    {
+                        if(identify!=null)End("Identification stopped: "+Describe(ex));
+                        else try
+                        {
+                            // A queued pointer may expire after UP/capture loss.
+                            // End only that gesture while healthy panels continue.
+                            Program.LogStatus("Touch read interrupted: "+Describe(ex));
+                            batch.Discard();pipeline.CancelPointer((uint)(m.WParam.ToInt64()&0xffff));
+                            contactDevices.Remove((uint)(m.WParam.ToInt64()&0xffff));
+                            recovery.DiscardOldInput();ValidateDevices();PublishActivity();
+                        }
+                        catch(Exception cleanup) { End("Correction stopped: "+Describe(cleanup)); }
+                    }
+                    catch(Exception ex) { End("Correction stopped: "+Describe(ex)); }
                     m.Result=IntPtr.Zero; return;
                 }
                 if(m.Msg>=0x0249 && m.Msg<=0x0253) { m.Result=IntPtr.Zero; return; }
@@ -200,19 +235,20 @@ namespace SurroundTouch
             void PublishActivity()
             {
                 int n=pipeline.ActiveCount;long f=frames;
-                if(identify!=null||(n==lastContactCount&&f==lastFrameCount)||(n==lastContactCount&&(DateTime.UtcNow-lastActivity).TotalMilliseconds<250))return;
+                if(identify!=null||recovery.Waiting||(n==lastContactCount&&f==lastFrameCount)||(n==lastContactCount&&(DateTime.UtcNow-lastActivity).TotalMilliseconds<250))return;
                 if(Interlocked.CompareExchange(ref activityPending,1,0)!=0)return;
                 lastActivity=DateTime.UtcNow;lastContactCount=n;lastFrameCount=f;
                 owner.Dispatch(delegate
                 {
                     Interlocked.Exchange(ref activityPending,0);
-                    if(!done&&owner.Activity!=null)owner.Activity(n,f);
+                    if(!done&&!recovery.Waiting&&owner.Activity!=null)owner.Activity(n,f);
                 });
             }
             void ReadFramesCore(uint pointer)
             {
+                if(recovery.Waiting)return;
                 Native.TOUCH initial;
-                if(!Native.GetPointerTouchInfo(pointer,out initial))throw NativeFailure("GetPointerTouchInfo");
+                if(!Native.GetPointerTouchInfo(pointer,out initial))throw ReadFailure("GetPointerTouchInfo");
                 if(identify!=null)
                 {
                     if((initial.pointerInfo.pointerFlags&Native.DOWN)!=0)
@@ -222,7 +258,7 @@ namespace SurroundTouch
                         if(device.IsUpdd)throw new InvalidOperationException("UPDD is still supplying virtual touch. Stop its service using Stop-UPDD.cmd, then Refresh. If physical touch stays unavailable, use the vendor uninstaller and restart Windows.");
                         if(device.IsInjectionDevice)throw new InvalidOperationException("That input came from a virtual touch device. Tap the physical touchscreen to identify its controller.");
                         IdentifiedDevice=device;
-                        End("Controller identified. Lift your finger.");
+                        End("Controller identified. Lift your finger.",false);
                     }
                     return;
                 }
@@ -235,15 +271,16 @@ namespace SurroundTouch
                 {
                     entries=0;count=0;
                     bool sized=Native.GetPointerFrameTouchInfoHistory(pointer,ref entries,ref count,null);
-                    if(!sized&&(entries==0||count==0))throw NativeFailure("GetPointerFrameTouchInfoHistory size query");
-                    if(count==0||entries==0||count>256||entries>4096||entries*count>65536)throw new InvalidOperationException("Unsupported touch frame size.");
+                    if(!sized&&(entries==0||count==0))throw ReadFailure("GetPointerFrameTouchInfoHistory size query");
+                    if(count==0||entries==0)throw new TouchReadFailure(0,"Touch history became unavailable during the size query.");
+                    if(count>256||entries>4096||entries*count>65536)throw new InvalidOperationException("Unsupported touch frame size.");
                     int required=(int)(entries*count);
                     if(historyBuffer.Length<required)historyBuffer=new Native.TOUCH[required];
                     all=historyBuffer;
-                    if(!Native.GetPointerFrameTouchInfoHistory(pointer,ref entries,ref count,all))throw NativeFailure("GetPointerFrameTouchInfoHistory");
+                    if(!Native.GetPointerFrameTouchInfoHistory(pointer,ref entries,ref count,all))throw ReadFailure("GetPointerFrameTouchInfoHistory");
                 }
-                else if(!Native.GetPointerFrameTouchInfo(pointer,ref count,all))throw NativeFailure("GetPointerFrameTouchInfo");
-                if(count==0||count>256||entries==0||entries>4096||(long)entries*count>all.Length)throw new InvalidOperationException("Touch history changed unexpectedly.");
+                else if(!Native.GetPointerFrameTouchInfo(pointer,ref count,all))throw ReadFailure("GetPointerFrameTouchInfo");
+                if(count==0||count>256||entries==0||entries>4096||(long)entries*count>all.Length)throw new TouchReadFailure(0,"Touch history changed during the read.");
                 int mergedBefore=batch.MergedFrames;
                 // Windows returns newest first. Feed the state machine oldest first.
                 for(int row=(int)entries-1;row>=0;row--)
@@ -256,12 +293,13 @@ namespace SurroundTouch
                     {
                         Native.TOUCH t=all[row*(int)count+col]; Native.POINTER_INFO p=t.pointerInfo;
                         if(p.pointerType!=2)continue;
+                        if(!recovery.AcceptInput(p.PerformanceCount,p.dwTime,row==0))continue;
                         TouchDevice device;
                         if(!devices.TryGetValue(p.sourceDevice,out device))
                         {
                             string path=Native.DevicePath(p.sourceDevice);
                             if(path.IndexOf("VIRTUAL_DIGITIZER",StringComparison.OrdinalIgnoreCase)>=0)continue;
-                            throw new InvalidOperationException("A touch controller changed. Press Refresh and reassign it.");
+                            WaitForControllers();return;
                         }
                         // Independent mode must not replay UPDD's second copy of a touch.
                         if(device.IsUpdd||device.IsInjectionDevice)continue;
@@ -303,6 +341,16 @@ namespace SurroundTouch
             }
             void ValidateDevices()
             {
+                if(identify==null)
+                {
+                    recovery.Check(Native.Devices);
+                    if(!recovery.Waiting)
+                    {
+                        devices.Clear();foreach(var item in recovery.Devices)devices.Add(item.Key,item.Value);
+                    }
+                    timer.Interval=recovery.Waiting||pipeline.ActiveCount==0?1000:30;
+                    return;
+                }
                 foreach(TouchDevice device in devices.Values)
                 {
                     if(device.IsUpdd || device.IsInjectionDevice || !device.HasRect)continue;
@@ -314,9 +362,29 @@ namespace SurroundTouch
                         throw new InvalidOperationException("Windows changed a controller's display mapping. Press Refresh before restarting.");
                 }
             }
-            void End(string reason)
+            void WaitForControllers()
+            {
+                recovery.Pause();lastDeviceCheck=DateTime.UtcNow;timer.Interval=1000;
+            }
+            void ResetInput()
+            {
+                batch.Discard();pipeline.CancelAll();contactDevices.Clear();
+                seen.Clear();history.Clear();samples.Clear();
+                lastContactCount=-1;lastFrameCount=-1;
+            }
+            sealed class TouchReadFailure : Win32Exception
+            {
+                internal TouchReadFailure(int code,string message) : base(code,message) { }
+            }
+            static TouchReadFailure ReadFailure(string operation)
+            {
+                int code=Marshal.GetLastWin32Error();
+                return new TouchReadFailure(code,operation+" failed: "+new Win32Exception(code).Message);
+            }
+            void End(string reason,bool needsAttention=true)
             {
                 if(done)return; done=true; timer.Stop();
+                NeedsAttention=needsAttention;
                 // Return original physical input first, even if cancellation fails.
                 if(registered) { Native.UnregisterPointerInputTarget(Handle,2); registered=false; }
                 try { pipeline.CancelAll(); } catch(Exception ex) { reason+=" (contact cleanup: "+Describe(ex)+")"; }

@@ -60,9 +60,13 @@ namespace SurroundTouch
             Validate();
             AtomicJson.Write(path,this);
         }
+        internal bool MatchesDisplay(string display,PixelRect bounds)
+        {
+            return String.Equals(Display,display,StringComparison.OrdinalIgnoreCase)&&Width==bounds.Width&&Height==bounds.Height&&X==bounds.X&&Y==bounds.Y;
+        }
         internal string RestoreProblem(string display,PixelRect bounds,RoleProfile first,RoleProfile second)
         {
-            if(!String.Equals(Display,display,StringComparison.OrdinalIgnoreCase)||Width!=bounds.Width||Height!=bounds.Height||X!=bounds.X||Y!=bounds.Y)
+            if(!MatchesDisplay(display,bounds))
                 return "The saved display or its layout has changed. Review the profile and press Start correction.";
             if(String.IsNullOrEmpty(First.Path)||String.IsNullOrEmpty(Second.Path)||String.Equals(First.Path,Second.Path,StringComparison.OrdinalIgnoreCase))
                 return "Identify two different controllers and save the profile before automatic restore.";

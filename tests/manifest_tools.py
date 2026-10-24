@@ -73,7 +73,7 @@ def verify(executable, expected_ui_access):
     execution = next(node for node in document.iter() if node.tag.endswith('requestedExecutionLevel'))
     assert execution.attrib == {'level': 'asInvoker', 'uiAccess': expected_ui_access}, 'Incorrect UIAccess manifest'
     identity = next(node for node in document.iter() if node.tag.endswith('assemblyIdentity'))
-    assert identity.attrib['version'] == '1.1.0.0', 'Incorrect version'
+    assert identity.attrib['version'] == '1.1.2.0', 'Incorrect version'
     assert identity.attrib['processorArchitecture'] == 'amd64', 'Incorrect manifest architecture'
     print(Path(executable).name + ': verified x64, file version resource, embedded UIAccess=' + expected_ui_access)
 

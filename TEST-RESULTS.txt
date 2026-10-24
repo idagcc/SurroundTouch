@@ -1,4 +1,4 @@
-SurroundTouch runtime/startup/driver diagnostics update — 24 October 2026
+SurroundTouch 1.1.2 automatic touch recovery and quiet notices update — 24 October 2026
 
 Validation host: macOS ARM64; Mono 6.14.1; C# language version 5;
 .NET Framework 4.5 reference assemblies; application builds target Windows x64.
@@ -7,17 +7,28 @@ This update has NOT been run on Windows or installed on the target PC.
 PASSED
 - Both Windows executable variants compile, optimized, warnings as errors.
 - Built PE resources verified: x64, file version resource, manifest version
-  1.1.0.0, UIAccess=true for the app and false for the diagnostics executable.
+  1.1.2.0, UIAccess=true for the app and false for the diagnostics executable.
   This checks embedded metadata, not actual UIAccess privileges on Windows.
 - Interactive WindowsIntegration entry point compiles; NOT executed.
 - CoreTests: 606 assertions (mapping and contact lifecycle).
-- RuntimeTests: 50 assertions (history coalescing/lifecycle boundaries/failure
-  recovery, profile persistence/restore checks, contact observation and x64 ABI).
-- Total: 656 passing assertions. No desktop input was injected.
+- RuntimeTests: 113 assertions (39 for touch recovery, 24 for quiet notice
+  policy, plus the previous 50 history/profile/observation/interop assertions).
+- Total: 719 passing assertions. No desktop input was injected.
+- Reconnection tests simulate missing/partial/different controllers, reordered
+  enumeration, replacement Windows handles, repeated dropouts, native enumeration
+  failures, complete cancellation, pending-movement discard, pointer ID reuse,
+  timestamp/history boundaries and tick wraparound, healthy-panel continuation,
+  unchanged calibration geometry, ambiguous identities and injection cleanup failure.
+  These use the production managed recovery logic with fake device enumeration;
+  they do not exercise native PnP broadcasts or physical USB reconnection.
+- Notice policy tests verify brief-dropout silence, delayed waiting messages,
+  one notice per outage, cooldown and duplicate suppression, recovery summaries,
+  Stop cancellation, attention priority and plain-language explanations.
 - A synthetic backlog of 2,000 movement frames emits one latest movement frame,
   retains the other controller, and preserves subsequent release/cancel events.
 
-PURE MANAGED BENCHMARK — five alternating runs, medians, same Mac/Mono
+PRIOR 1.1.0 PURE MANAGED BENCHMARK — not rerun for 1.1.2
+Five alternating runs, medians, same Mac/Mono
                             Before       After        Gen0 before/after
 200,000 two-contact moves   297.68 ms    253.31 ms          74 / 33
 1,000,000 held-contact Tick 119.61 ms      2.16 ms          55 / 0
@@ -27,6 +38,13 @@ Source: tests/CoreBenchmark.cs. Raw run output is in the workspace work/
 runtime-optimization-tests/benchmark-runs.json.
 
 CODE-LEVEL CHANGES REQUIRING WINDOWS ACCEPTANCE
+- Quiet, non-activating six-second notices; no tray balloon or modal recovery
+  dialogs; automatic role selection updates after replacement controller handles.
+- Automatic mid-session USB reconnection with stable identity/source geometry
+  verification, replacement handles, retained calibration and indefinite retry.
+- Pointer read failures release the affected gesture while healthy contacts
+  continue; source loss pauses corrected input and cancels all old gestures.
+- Waiting/reconnected status, Stop/hotkey/Exit cancellation during recovery.
 - Configured idle receiver timer: 25 ms -> 1,000 ms (40 -> 1 wakeup/sec).
   Active-contact timer: 30 ms, keeping held-contact updates.
 - Reusable native buffers, reduced pipeline allocations, within-read movement
@@ -38,6 +56,15 @@ CODE-LEVEL CHANGES REQUIRING WINDOWS ACCEPTANCE
   original-input two-finger/per-controller observations, runtime counters.
 
 STILL NEEDS WINDOWS VERIFICATION
+- Notice placement/DPI, silent appearance, no keyboard-focus theft, auto-dismiss,
+  close/open actions, cooldown during repeated dropouts, and changed-layout notice.
+- Stop and Start after a reconnect must use the updated controller selections
+  without requiring Refresh or Identify.
+- Unplug/replug either or both physical USB touch controllers during simultaneous
+  touch, brief resets between polls, changed handles, and repeated interruptions.
+- Reconnect must resume the original calibration without Identify/Refresh, with
+  no stale touches; verify corners/edges and fresh simultaneous touch afterwards.
+- Stop, Ctrl+Alt+F10 and Exit during recovery must prevent later automatic resume.
 - Installer signing/trust and uninstall/startup cleanup in user registry hives.
 - App UI, DPI/scrolling/tray controls and reopening an existing instance.
 - Startup after reboot with immediate and delayed USB device arrival.

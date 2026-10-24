@@ -35,5 +35,10 @@ namespace SurroundTouch
             foreach(var device in pending.Values)device.Clear();
             pendingFrames=0;
         }
+        internal void Discard()
+        {
+            foreach(var device in pending.Values)device.Clear();
+            output.Clear();pendingFrames=0;
+        }
     }
 }
